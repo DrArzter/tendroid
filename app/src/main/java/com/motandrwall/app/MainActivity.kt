@@ -5,13 +5,16 @@ import android.app.WallpaperManager
 import android.content.ComponentName
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Outline
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.util.Log
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
-import android.view.ViewGroup
-import android.widget.Button
+import android.view.ViewOutlineProvider
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -23,6 +26,9 @@ import com.motandrwall.app.tendies.TendiesSelectionStore
 import com.motandrwall.app.tendies.scene.TendiesSceneLoader
 import com.motandrwall.app.wallpaper.TendiesWallpaperService
 import com.motandrwall.app.ui.TendiesPreviewView
+import com.motandrwall.app.update.GitHubRelease
+import com.motandrwall.app.update.GitHubUpdateManager
+import com.motandrwall.app.update.UpdateCheckResult
 import java.io.FileInputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
@@ -31,19 +37,25 @@ class MainActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
     private val loadGeneration = AtomicInteger()
     private lateinit var status: TextView
-    private lateinit var importButton: Button
+    private lateinit var importButton: TextView
     private lateinit var progress: ProgressBar
     private lateinit var preview: TendiesPreviewView
+    private lateinit var updateStatus: TextView
+    private lateinit var updateButton: TextView
+    private var availableUpdate: GitHubRelease? = null
+    private val updateManager by lazy { GitHubUpdateManager(this) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(buildContent())
         val incomingPackage = intent?.data
         if (incomingPackage != null) importUri(incomingPackage) else loadSelectedOrDefault()
+        checkForUpdates(silent = true)
     }
 
     override fun onDestroy() {
         loadGeneration.incrementAndGet()
+        updateManager.close()
         worker.shutdownNow()
         super.onDestroy()
     }
@@ -155,22 +167,16 @@ class MainActivity : Activity() {
 
     private fun formatReport(imported: ImportedTendies): String = buildString {
         val report = imported.report
-        appendLine("Package imported")
+        appendLine(if (report.isRenderable) "Ready to render" else "Limited compatibility")
         appendLine()
-        appendLine("Compatibility: ${if (report.isRenderable) "renderable" else "unsupported"}")
-        appendLine("Images: ${report.imageAssets}")
-        appendLine("CAML scenes: ${report.camlDocuments}")
-        appendLine("Layers: ${report.layers} (${report.imageLayers} image, ${report.textLayers} text)")
-        appendLine("States: ${report.states.ifEmpty { setOf("none") }.joinToString()}")
-        appendLine("Animations: ${report.animations.ifEmpty { setOf("none") }.joinToString()}")
-        appendLine("Package ID: ${imported.sha256.take(12)}")
+        appendLine("${report.imageAssets} images  •  ${report.layers} layers  •  ${report.camlDocuments} scenes")
+        appendLine(report.states.ifEmpty { setOf("No states") }.joinToString("  /  "))
+        if (report.animations.isNotEmpty()) appendLine(report.animations.joinToString())
+        appendLine("ID ${imported.sha256.take(12)}")
         if (report.warnings.isNotEmpty()) {
             appendLine()
-            appendLine("Warnings:")
-            report.warnings.forEach { appendLine("• $it") }
+            report.warnings.forEach { appendLine("Note · $it") }
         }
-        appendLine()
-        append("Ready for the Android live wallpaper preview.")
     }
 
     private fun setBusy(busy: Boolean) {
@@ -178,79 +184,204 @@ class MainActivity : Activity() {
         importButton.isEnabled = !busy
     }
 
+    private fun checkForUpdates(silent: Boolean) {
+        updateButton.isEnabled = false
+        if (!silent) updateStatus.text = getString(R.string.update_checking)
+        updateManager.check { result ->
+            updateButton.isEnabled = true
+            when (result) {
+                UpdateCheckResult.Current -> {
+                    availableUpdate = null
+                    updateStatus.text = getString(R.string.update_current, BuildConfig.VERSION_CODE)
+                    updateButton.text = getString(R.string.check_again)
+                }
+                is UpdateCheckResult.Available -> {
+                    availableUpdate = result.release
+                    updateStatus.text = getString(R.string.update_available, result.release.title)
+                    updateButton.text = getString(R.string.install_update)
+                }
+                is UpdateCheckResult.Unavailable -> {
+                    availableUpdate = null
+                    updateStatus.text = if (result.reason.contains("private", ignoreCase = true)) {
+                        getString(R.string.update_private_channel)
+                    } else {
+                        getString(R.string.update_unavailable)
+                    }
+                    updateButton.text = getString(R.string.check_again)
+                }
+            }
+        }
+    }
+
+    private fun handleUpdateAction() {
+        val release = availableUpdate
+        if (release == null) {
+            checkForUpdates(silent = false)
+            return
+        }
+        updateButton.isEnabled = false
+        updateStatus.text = getString(R.string.update_downloading)
+        updateManager.downloadAndInstall(release) { message ->
+            updateButton.isEnabled = true
+            updateStatus.text = message
+        }
+    }
+
     private fun buildContent(): ScrollView {
         val density = resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
+        val accentValue = TypedValue()
+        theme.resolveAttribute(android.R.attr.colorAccent, accentValue, true)
+        val accent = accentValue.data.takeIf { it != 0 } ?: Color.rgb(144, 132, 255)
+        val onAccent = if (Color.luminance(accent) > 0.45f) Color.rgb(8, 10, 14) else Color.WHITE
+
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = Color.rgb(8, 10, 14)
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+
+        fun rounded(color: Int, radius: Int, strokeColor: Int? = null): GradientDrawable =
+            GradientDrawable().apply {
+                setColor(color)
+                cornerRadius = dp(radius).toFloat()
+                strokeColor?.let { setStroke(dp(1), it) }
+            }
+
+        fun textView(
+            value: String,
+            size: Float,
+            color: Int,
+            style: Int = Typeface.NORMAL,
+        ) = TextView(this).apply {
+            text = value
+            textSize = size
+            setTextColor(color)
+            typeface = Typeface.create("sans-serif", style)
+            includeFontPadding = false
+        }
+
+        fun action(value: String, primary: Boolean, onClick: () -> Unit) =
+            TextView(this).apply {
+                text = value
+                textSize = 16f
+                gravity = Gravity.CENTER
+                setTextColor(if (primary) onAccent else Color.rgb(232, 238, 240))
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                background = rounded(
+                    if (primary) accent else Color.rgb(26, 31, 39),
+                    18,
+                    if (primary) null else Color.rgb(52, 61, 72),
+                )
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { onClick() }
+            }
+
+        fun card(): LinearLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(Color.rgb(19, 23, 30), 24, Color.rgb(38, 45, 55))
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+        }
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(dp(24), dp(48), dp(24), dp(32))
-            setBackgroundColor(Color.rgb(14, 17, 22))
+            setPadding(dp(20), dp(56), dp(20), dp(40))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.rgb(15, 19, 25), Color.rgb(7, 9, 13)),
+            )
         }
 
-        container.addView(TextView(this).apply {
-            text = "Tendroid"
-            textSize = 40f
-            setTextColor(Color.rgb(244, 246, 248))
-            gravity = Gravity.CENTER
-        }, ViewGroup.LayoutParams(-1, -2))
-
-        container.addView(TextView(this).apply {
-            text = "Import an iOS PosterBoard package, inspect its scene, and prepare it for the Android live wallpaper engine."
-            textSize = 16f
-            setTextColor(Color.rgb(170, 178, 191))
-            gravity = Gravity.CENTER
-            setPadding(0, dp(18), 0, dp(28))
-        }, ViewGroup.LayoutParams(-1, -2))
-
-        importButton = Button(this).apply {
-            text = "Choose .tendies"
-            setOnClickListener { pickTendies() }
+        val appBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
-        container.addView(importButton, LinearLayout.LayoutParams(-1, dp(56)))
+        appBar.addView(textView(
+            getString(R.string.app_name),
+            25f,
+            Color.rgb(246, 248, 250),
+            Typeface.BOLD,
+        ), LinearLayout.LayoutParams(0, -2, 1f))
+        appBar.addView(textView(
+            getString(R.string.build_label, BuildConfig.VERSION_CODE),
+            13f,
+            Color.rgb(158, 168, 181),
+        ))
+        container.addView(appBar, LinearLayout.LayoutParams(-1, -2).apply {
+            bottomMargin = dp(22)
+        })
+
+        importButton = action(getString(R.string.choose_tendies), primary = true, ::pickTendies)
+        container.addView(importButton, LinearLayout.LayoutParams(-1, dp(58)))
+
+        container.addView(action(getString(R.string.open_wallpaper_preview), primary = false) {
+            startActivity(
+                Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
+                    putExtra(
+                        WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
+                        ComponentName(this@MainActivity, TendiesWallpaperService::class.java),
+                    )
+                },
+            )
+        }, LinearLayout.LayoutParams(-1, dp(58)).apply { topMargin = dp(10) })
+
+        container.addView(textView(
+            getString(R.string.current_wallpaper),
+            12f,
+            Color.rgb(128, 139, 153),
+            Typeface.BOLD,
+        ), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(34) })
 
         preview = TendiesPreviewView(this).apply {
             visibility = View.GONE
             setBackgroundColor(Color.BLACK)
-        }
-        container.addView(preview, LinearLayout.LayoutParams(-1, dp(520)).apply {
-            topMargin = dp(18)
-        })
-
-        container.addView(Button(this).apply {
-            text = "Open live wallpaper preview"
-            setOnClickListener {
-                startActivity(
-                    Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
-                        putExtra(
-                            WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
-                            ComponentName(this@MainActivity, TendiesWallpaperService::class.java),
-                        )
-                    },
-                )
+            clipToOutline = true
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(26).toFloat())
+                }
             }
-        }, LinearLayout.LayoutParams(-1, dp(56)).apply { topMargin = dp(12) })
+        }
+        container.addView(preview, LinearLayout.LayoutParams(-1, dp(500)).apply {
+            topMargin = dp(12)
+        })
 
         progress = ProgressBar(this).apply {
             visibility = ProgressBar.GONE
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(accent)
         }
         container.addView(progress, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
-            topMargin = dp(24)
+            gravity = Gravity.CENTER_HORIZONTAL
+            topMargin = dp(18)
         })
 
-        status = TextView(this).apply {
-            text = "No package imported yet."
-            textSize = 15f
-            setTextColor(Color.rgb(244, 246, 248))
-            setBackgroundColor(Color.rgb(23, 27, 34))
-            setPadding(dp(18), dp(18), dp(18), dp(18))
+        val detailsCard = card()
+        detailsCard.addView(textView(getString(R.string.wallpaper_details), 18f, Color.WHITE, Typeface.BOLD))
+        status = textView(getString(R.string.no_package), 14f, Color.rgb(171, 181, 193)).apply {
+            setLineSpacing(0f, 1.18f)
         }
-        container.addView(status, LinearLayout.LayoutParams(-1, -2).apply {
-            topMargin = dp(24)
+        detailsCard.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+        container.addView(detailsCard, LinearLayout.LayoutParams(-1, -2).apply {
+            topMargin = dp(14)
         })
 
-        return ScrollView(this).apply { addView(container) }
+        val updateCard = card()
+        updateCard.addView(textView(getString(R.string.updates), 18f, Color.WHITE, Typeface.BOLD))
+        updateStatus = textView(
+            getString(R.string.update_initial, BuildConfig.VERSION_CODE),
+            14f,
+            Color.rgb(171, 181, 193),
+        ).apply { setLineSpacing(0f, 1.18f) }
+        updateCard.addView(updateStatus, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        updateButton = action(getString(R.string.check_updates), primary = false, ::handleUpdateAction)
+        updateCard.addView(updateButton, LinearLayout.LayoutParams(-1, dp(50)).apply { topMargin = dp(16) })
+        container.addView(updateCard, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
+
+        return ScrollView(this).apply {
+            isFillViewport = true
+            overScrollMode = View.OVER_SCROLL_NEVER
+            addView(container)
+        }
     }
 
     private companion object {

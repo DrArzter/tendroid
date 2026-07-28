@@ -30,11 +30,13 @@ jobs:
       - name: Restore persistent APK signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
+          KEYSTORE_PATH: ${{ runner.temp }}/tendroid-debug.keystore
         run: |
-          install -d "${HOME}/.android"
-          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "${HOME}/.android/debug.keystore"
+          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "${KEYSTORE_PATH}"
 
       - name: Test, lint, and build installable APK
+        env:
+          TENDROID_SIGNING_STORE_FILE: ${{ runner.temp }}/tendroid-debug.keystore
         run: ./gradlew testDebugUnitTest lintDebug assembleDebug
 
       - name: Name release asset

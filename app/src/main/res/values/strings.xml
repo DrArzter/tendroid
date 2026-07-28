@@ -3,4 +3,21 @@
     <string name="app_name">Tendroid</string>
     <string name="wallpaper_name">Tendroid wallpaper</string>
     <string name="wallpaper_description">Imported Tendies wallpaper</string>
+    <string name="build_label">Build %1$d</string>
+    <string name="choose_tendies">Import .tendies</string>
+    <string name="open_wallpaper_preview">Set wallpaper</string>
+    <string name="current_wallpaper">CURRENT WALLPAPER</string>
+    <string name="wallpaper_details">Package details</string>
+    <string name="no_package">No package loaded yet.</string>
+    <string name="updates">App updates</string>
+    <string name="update_initial">Installed build %1$d. Checking GitHub Releases…</string>
+    <string name="update_checking">Checking GitHub Releases…</string>
+    <string name="update_current">Build %1$d is up to date.</string>
+    <string name="update_available">%1$s is ready to install.</string>
+    <string name="update_private_channel">Automatic updates are ready, but the GitHub release channel is currently private.</string>
+    <string name="update_unavailable">Could not reach the update channel.</string>
+    <string name="update_downloading">Downloading and verifying update…</string>
+    <string name="check_updates">Check for updates</string>
+    <string name="check_again">Check again</string>
+    <string name="install_update">Download update</string>
 </resources>
