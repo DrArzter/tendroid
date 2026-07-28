@@ -5,13 +5,17 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.max
 
 class TendiesSceneRenderer {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val bitmapDestination = RectF()
+    private val typefaces = ConcurrentHashMap<String, Typeface>()
 
     fun render(canvas: Canvas, scene: TendiesScene, stateName: String = "Unlock") {
-        render(canvas, scene, stateName, stateName, 1f)
+        val pose = scene.pose(stateName)
+        render(canvas, scene, pose, pose, 1f)
     }
 
     fun render(
@@ -21,9 +25,43 @@ class TendiesSceneRenderer {
         toState: String,
         progress: Float,
     ) {
+        render(canvas, scene, scene.pose(fromState), scene.pose(toState), progress)
+    }
+
+    fun render(
+        canvas: Canvas,
+        scene: TendiesScene,
+        fromPose: ScenePose,
+        toPose: ScenePose,
+        progress: Float,
+    ) {
+        render(canvas, scene, fromPose, toPose) { progress.coerceIn(0f, 1f) }
+    }
+
+    fun render(
+        canvas: Canvas,
+        scene: TendiesScene,
+        fromPose: ScenePose,
+        toPose: ScenePose,
+        transition: SceneTransition?,
+        linearProgress: Float,
+    ) {
+        render(canvas, scene, fromPose, toPose) { keyPath ->
+            transition?.transform(linearProgress, keyPath)
+                ?: TransitionCurve.SmoothStep.transform(linearProgress, 1f)
+        }
+    }
+
+    private fun render(
+        canvas: Canvas,
+        scene: TendiesScene,
+        fromPose: ScenePose,
+        toPose: ScenePose,
+        progress: (String) -> Float,
+    ) {
         canvas.drawColor(Color.BLACK)
-        scene.documents.forEach { document ->
-            renderDocument(canvas, scene, document, fromState, toState, progress.coerceIn(0f, 1f))
+        scene.documents.forEachIndexed { index, document ->
+            renderDocument(canvas, scene, document, fromPose, toPose, index, progress)
         }
     }
 
@@ -31,9 +69,10 @@ class TendiesSceneRenderer {
         canvas: Canvas,
         scene: TendiesScene,
         document: SceneDocument,
-        fromState: String,
-        toState: String,
-        progress: Float,
+        fromPose: ScenePose,
+        toPose: ScenePose,
+        documentIndex: Int,
+        progress: (String) -> Float,
     ) {
         val root = document.root
         if (root.width <= 0f || root.height <= 0f) return
@@ -48,8 +87,9 @@ class TendiesSceneRenderer {
             scene = scene,
             document = document,
             layer = root,
-            fromState = fromState,
-            toState = toState,
+            fromPose = fromPose,
+            toPose = toPose,
+            documentIndex = documentIndex,
             progress = progress,
             inheritedAlpha = 1f,
             parentHeight = root.height,
@@ -63,25 +103,27 @@ class TendiesSceneRenderer {
         scene: TendiesScene,
         document: SceneDocument,
         layer: SceneLayer,
-        fromState: String,
-        toState: String,
-        progress: Float,
+        fromPose: ScenePose,
+        toPose: ScenePose,
+        documentIndex: Int,
+        progress: (String) -> Float,
         inheritedAlpha: Float,
         parentHeight: Float,
         parentCoordinatesYUp: Boolean,
     ) {
-        val from = document.states[fromState]?.get(layer.id)
-        val to = document.states[toState]?.get(layer.id)
-        val positionX = lerp(from?.positionX ?: layer.positionX, to?.positionX ?: layer.positionX, progress)
-        val rawPositionY = lerp(from?.positionY ?: layer.positionY, to?.positionY ?: layer.positionY, progress)
+        val from = fromPose.documents.getOrNull(documentIndex)?.get(layer.id)
+            ?: LayerPose(layer.positionX, layer.positionY, layer.rotationRadians, layer.opacity)
+        val to = toPose.documents.getOrNull(documentIndex)?.get(layer.id) ?: from
+        val positionX = lerp(from.positionX, to.positionX, progress("position.x"))
+        val rawPositionY = lerp(from.positionY, to.positionY, progress("position.y"))
         val positionY = if (parentCoordinatesYUp) parentHeight - rawPositionY else rawPositionY
         val rawRotation = lerp(
-            from?.rotationRadians ?: layer.rotationRadians,
-            to?.rotationRadians ?: layer.rotationRadians,
-            progress,
+            from.rotationRadians,
+            to.rotationRadians,
+            progress("transform.rotation.z"),
         )
         val rotation = if (parentCoordinatesYUp) -rawRotation else rawRotation
-        val opacity = lerp(from?.opacity ?: layer.opacity, to?.opacity ?: layer.opacity, progress)
+        val opacity = lerp(from.opacity, to.opacity, progress("opacity"))
         val alpha = (inheritedAlpha * opacity).coerceIn(0f, 1f)
         if (alpha <= 0f) return
 
@@ -111,12 +153,9 @@ class TendiesSceneRenderer {
             canvas.drawBitmap(
                 bitmap,
                 null,
-                RectF(
-                    layer.boundsX,
-                    layer.boundsY,
-                    layer.boundsX + layer.width,
-                    layer.boundsY + layer.height,
-                ),
+                bitmapDestination.apply {
+                    set(layer.boundsX, layer.boundsY, layer.boundsX + layer.width, layer.boundsY + layer.height)
+                },
                 paint,
             )
         }
@@ -124,7 +163,8 @@ class TendiesSceneRenderer {
             paint.color = layer.foregroundColor
             paint.textSize = layer.fontSize
             paint.textAlign = Paint.Align.CENTER
-            paint.typeface = Typeface.create(layer.fontName, Typeface.NORMAL)
+            val fontKey = layer.fontName.orEmpty()
+            paint.typeface = typefaces.getOrPut(fontKey) { Typeface.create(layer.fontName, Typeface.NORMAL) }
             val metrics = paint.fontMetrics
             val baseline = layer.boundsY + layer.height / 2f - (metrics.ascent + metrics.descent) / 2f
             canvas.drawText(text, layer.boundsX + layer.width / 2f, baseline, paint)
@@ -136,8 +176,9 @@ class TendiesSceneRenderer {
                 scene = scene,
                 document = document,
                 layer = child,
-                fromState = fromState,
-                toState = toState,
+                fromPose = fromPose,
+                toPose = toPose,
+                documentIndex = documentIndex,
                 progress = progress,
                 inheritedAlpha = alpha,
                 parentHeight = layer.height,

@@ -1,6 +1,6 @@
 # Tendroid
 
-Android importer and renderer-in-progress for Apple PosterBoard `.tendies` wallpaper packages.
+Android importer and live wallpaper renderer for Apple PosterBoard `.tendies` packages.
 
 ## Current prototype
 
@@ -33,6 +33,8 @@ TENDIES_SAMPLE=/absolute/path/to/sample.tendies \
 
 ## Supported CAML subset
 
-The renderer currently supports `CALayer`, `CGImage`, `CATextLayer`, nested transforms, `LKState` overrides, and static `Locked`/`Unlock`/`Sleep` state selection. Timed transition playback is the next milestone.
+The renderer currently supports `CALayer`, `CGImage`, `CATextLayer`, nested transforms, `LKState` overrides, `Locked`/`Unlock`/`Sleep` state transitions, per-key-path timing, and `CASpringAnimation` parameters.
+
+Every push to `main` runs tests and lint, builds an installable debug-signed APK, and publishes it as a GitHub prerelease. Production distribution should use a persistent release keystore instead.
 
 The bundled Roxy asset is intended only for local prototype testing. Confirm its redistribution rights before publishing an APK containing it.

@@ -1,6 +1,7 @@
 package com.motandrwall.app.tendies
 
 import android.content.Context
+import android.content.SharedPreferences
 import java.io.File
 
 class TendiesSelectionStore(private val context: Context) {
@@ -25,9 +26,19 @@ class TendiesSelectionStore(private val context: Context) {
         return File(importsDirectory, name).takeIf(File::isFile)
     }
 
-    private companion object {
-        const val PREFERENCES = "tendies_selection"
-        const val KEY_FILE_NAME = "selected_file_name"
+    fun registerListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
+        preferences().registerOnSharedPreferenceChangeListener(listener)
+    }
+
+    fun unregisterListener(listener: SharedPreferences.OnSharedPreferenceChangeListener) {
+        preferences().unregisterOnSharedPreferenceChangeListener(listener)
+    }
+
+    private fun preferences(): SharedPreferences =
+        context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+
+    companion object {
+        private const val PREFERENCES = "tendies_selection"
+        internal const val KEY_FILE_NAME = "selected_file_name"
     }
 }
-
