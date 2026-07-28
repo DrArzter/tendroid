@@ -497,7 +497,11 @@ class TendiesWallpaperService : WallpaperService() {
         }
 
         private fun currentSystemState(): String {
-            return if (keyguardGoingAway || !isKeyguardLocked()) "Unlock" else "Locked"
+            return when {
+                !isDeviceInteractive() -> "Sleep"
+                keyguardGoingAway || !isKeyguardLocked() -> "Unlock"
+                else -> "Locked"
+            }
         }
 
         private fun isKeyguardLocked(): Boolean {
@@ -531,6 +535,10 @@ class TendiesWallpaperService : WallpaperService() {
 
         private fun drawPlaceholder(canvas: Canvas) {
             canvas.drawColor(Color.rgb(14, 17, 22))
+            // A selected package is loaded off the main thread. Keep engine
+            // recreation during AOD visually quiet instead of briefly claiming
+            // that no wallpaper is installed.
+            if (selectionStore.selectedFile() != null) return
             paint.color = Color.rgb(116, 224, 193)
             paint.textSize = 44f
             paint.textAlign = Paint.Align.CENTER
