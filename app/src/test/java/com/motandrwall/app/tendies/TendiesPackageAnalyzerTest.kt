@@ -18,6 +18,7 @@ class TendiesPackageAnalyzerTest {
         assertTrue(report.isRenderable)
         assertTrue(report.imageAssets > 0)
         assertTrue(report.camlDocuments > 0)
+        assertTrue(report.warnings.none { it.contains("scripted behavior") })
         println("Real Tendies report: $report")
     }
 
@@ -52,6 +53,19 @@ class TendiesPackageAnalyzerTest {
         assertEquals(setOf("Locked", "Unlock"), report.states)
         assertEquals(setOf("CASpringAnimation"), report.animations)
         assertEquals(1, report.javascriptAssets)
+        assertTrue(report.warnings.none { it.contains("scripted behavior") })
+    }
+
+    @Test
+    fun reportsExecutablePackageScripts() {
+        val report = TendiesPackageAnalyzer.analyze(
+            ByteArrayInputStream(zipOf(
+                "scene/main.caml" to "<caml/>".toByteArray(),
+                "scene/assets/Root_Layer.js" to "function ready() { layer.opacity = 0.5; }".toByteArray(),
+            )),
+        )
+
+        assertTrue(report.warnings.any { it.contains("scripted behavior") })
     }
 
     @Test(expected = InvalidTendiesException::class)

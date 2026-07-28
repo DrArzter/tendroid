@@ -11,6 +11,7 @@ object TendiesPackageAnalyzer {
     private const val MAX_ENTRY_BYTES = 64L * 1024 * 1024
     private const val MAX_TOTAL_BYTES = 512L * 1024 * 1024
     private const val MAX_CAML_BYTES = 4L * 1024 * 1024
+    private const val MAX_SCRIPT_INSPECTION_BYTES = 2L * 1024 * 1024
 
     fun analyze(input: InputStream): TendiesReport {
         var entries = 0
@@ -19,6 +20,7 @@ object TendiesPackageAnalyzer {
         var videos = 0
         var camlDocuments = 0
         var scripts = 0
+        var behaviorScripts = 0
         var layers = 0
         var imageLayers = 0
         var textLayers = 0
@@ -45,9 +47,11 @@ object TendiesPackageAnalyzer {
                     }
 
                     val lowerName = entry.name.lowercase(Locale.ROOT)
+                    val extension = lowerName.substringAfterLast('.', missingDelimiterValue = "")
                     val captureCaml = lowerName.endsWith(".caml") &&
                         lowerName.substringAfterLast('/').equals("main.caml", ignoreCase = true)
-                    val captured = if (captureCaml) ByteArrayOutputStream() else null
+                    val captureScript = extension == "js"
+                    val captured = if (captureCaml || captureScript) ByteArrayOutputStream() else null
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     var entryBytes = 0L
 
@@ -60,22 +64,28 @@ object TendiesPackageAnalyzer {
                             throw InvalidTendiesException("Package exceeds safe size limits")
                         }
                         if (captured != null) {
-                            if (entryBytes > MAX_CAML_BYTES) {
-                                throw InvalidTendiesException("CAML document is too large")
+                            val captureLimit = if (captureCaml) MAX_CAML_BYTES else MAX_SCRIPT_INSPECTION_BYTES
+                            if (entryBytes > captureLimit) {
+                                throw InvalidTendiesException(
+                                    if (captureCaml) "CAML document is too large" else "JavaScript asset is too large",
+                                )
                             }
                             captured.write(buffer, 0, count)
                         }
                     }
 
-                    when (lowerName.substringAfterLast('.', missingDelimiterValue = "")) {
+                    when (extension) {
                         "png", "jpg", "jpeg", "webp", "heic", "heif" -> images++
                         "mp4", "mov", "m4v", "webm" -> videos++
                         "js" -> scripts++
                     }
 
-                    captured?.let {
+                    if (captureScript && captured != null && containsBehaviorCode(captured.toByteArray())) {
+                        behaviorScripts++
+                    }
+                    if (captureCaml && captured != null) {
                         camlDocuments++
-                        val summary = CamlSceneAnalyzer.analyze(it.toByteArray())
+                        val summary = CamlSceneAnalyzer.analyze(captured.toByteArray())
                         layers += summary.layers
                         imageLayers += summary.imageLayers
                         textLayers += summary.textLayers
@@ -96,7 +106,7 @@ object TendiesPackageAnalyzer {
         if (entries == 0 || camlDocuments == 0) {
             throw InvalidTendiesException("No Tendies CAML scene was found")
         }
-        if (scripts > 0) warnings += "JavaScript is present and will not be executed"
+        if (behaviorScripts > 0) warnings += "This package contains scripted behavior that is not supported yet"
         if (videos > 0) warnings += "Video layers are not implemented yet"
         if (imageLayers == 0) warnings += "No image layers were found in CAML"
 
@@ -114,6 +124,14 @@ object TendiesPackageAnalyzer {
             animations = animations,
             warnings = warnings.toList(),
         )
+    }
+
+    private fun containsBehaviorCode(bytes: ByteArray): Boolean {
+        val source = bytes.toString(Charsets.UTF_8)
+            .replace(Regex("(?s)/\\*.*?\\*/"), "")
+            .replace(Regex("(?m)//.*$"), "")
+            .replace(Regex("(?m)^\\s*(['\"])use strict\\1\\s*;?\\s*$"), "")
+        return source.isNotBlank()
     }
 
     private fun validatePath(path: String) {
