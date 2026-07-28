@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.75"
+        android:scaleY="0.58"
+        android:translateX="-3"
+        android:translateY="-3">
+
+    <!-- Sleep: the rear wallpaper folds down into the transition wave. -->
+    <path
+        android:fillColor="#8D59F5"
+        android:pathData="M24,36 C24,31 27,27 31,25 L47,17 C51,15 54,17 54,21 L54,54 C54,58 52,61 49,63 L35,72 C32,74 30,77 30,81 L30,86 C30,89 32,91 35,90 L49,85 L49,92 L34,97 C26,99 23,94 23,87 Z" />
+
+    <!-- Lock: the middle state continues the same folded ribbon. -->
+    <path
+        android:fillColor="#FF5E61"
+        android:pathData="M40,36 C40,31 43,27 47,25 L63,17 C67,15 70,17 70,21 L70,58 C70,62 68,65 65,67 L52,75 C49,77 47,81 47,84 L47,87 C47,91 50,94 54,92 L68,87 L68,94 L53,99 C44,101 39,95 39,87 Z" />
+
+    <!-- Home: the front state becomes a calm wallpaper wave. -->
+    <path
+        android:fillColor="#FFF8EF"
+        android:pathData="M57,38 C57,32 60,28 65,25 L79,18 C84,16 87,19 87,24 L87,59 C87,66 83,69 78,68 C72,67 68,62 63,60 C60,59 58,60 57,61 Z" />
+    <path
+        android:fillColor="#8D59F5"
+        android:pathData="M58,72 C63,70 68,72 73,75 C78,78 82,79 87,77 L87,88 C87,92 85,95 81,96 L61,101 C57,102 55,99 55,95 L55,78 C55,75 56,73 58,72 Z" />
+    <path
+        android:fillColor="#FF5E61"
+        android:pathData="M70,37 A6,6 0,1 0,82 37 A6,6 0,1 0,70 37" />
+    </group>
+</vector>
