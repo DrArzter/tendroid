@@ -61,6 +61,37 @@ class TendiesPackageAnalyzerTest {
         )
     }
 
+    @Test(expected = InvalidTendiesException::class)
+    fun rejectsDuplicateEntries() {
+        TendiesPackageAnalyzer.analyze(
+            ByteArrayInputStream(
+                zipOf(
+                    "scene/main.caml" to "<caml/>".toByteArray(),
+                    "scene/MAIN.CAML" to "<caml/>".toByteArray(),
+                ),
+            ),
+        )
+    }
+
+    @Test(expected = InvalidTendiesException::class)
+    fun rejectsDoctypeAfterLongPrefix() {
+        val caml = (" ".repeat(2_048) + "<!DOCTYPE caml [<!ENTITY x 'boom'>]><caml>&x;</caml>")
+            .toByteArray()
+        TendiesPackageAnalyzer.analyze(
+            ByteArrayInputStream(zipOf("scene/main.caml" to caml)),
+        )
+    }
+
+    @Test(expected = InvalidTendiesException::class)
+    fun rejectsExcessiveXmlDepth() {
+        val depth = CamlSafety.MAX_XML_DEPTH + 1
+        val caml = ("<caml>" + "<node>".repeat(depth) + "</node>".repeat(depth) + "</caml>")
+            .toByteArray()
+        TendiesPackageAnalyzer.analyze(
+            ByteArrayInputStream(zipOf("scene/main.caml" to caml)),
+        )
+    }
+
     private fun zipOf(vararg files: Pair<String, ByteArray>): ByteArray {
         val output = ByteArrayOutputStream()
         ZipOutputStream(output).use { zip ->

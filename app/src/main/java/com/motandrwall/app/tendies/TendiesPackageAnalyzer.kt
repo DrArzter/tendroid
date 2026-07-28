@@ -25,6 +25,7 @@ object TendiesPackageAnalyzer {
         val states = linkedSetOf<String>()
         val animations = linkedSetOf<String>()
         val warnings = linkedSetOf<String>()
+        val entryNames = hashSetOf<String>()
 
         try {
             ZipInputStream(input.buffered()).use { zip ->
@@ -35,6 +36,9 @@ object TendiesPackageAnalyzer {
                         throw InvalidTendiesException("Package contains too many entries")
                     }
                     validatePath(entry.name)
+                    if (!entryNames.add(entry.name.lowercase(Locale.ROOT))) {
+                        throw InvalidTendiesException("Package contains a duplicate ZIP entry: ${entry.name}")
+                    }
                     if (entry.isDirectory) {
                         zip.closeEntry()
                         continue
@@ -124,4 +128,3 @@ object TendiesPackageAnalyzer {
         }
     }
 }
-

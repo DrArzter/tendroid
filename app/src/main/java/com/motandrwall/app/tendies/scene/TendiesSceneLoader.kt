@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import com.motandrwall.app.tendies.InvalidTendiesException
+import com.motandrwall.app.tendies.CamlSafety
+import com.motandrwall.app.tendies.CamlSceneAnalyzer
 import org.w3c.dom.Element
 import org.w3c.dom.Node
 import java.io.ByteArrayOutputStream
@@ -22,10 +24,12 @@ class TendiesSceneLoader {
         private const val MAX_CAML_BYTES = 4 * 1024 * 1024
         private const val MAX_BITMAP_PIXELS = 16_000_000L
         private const val MAX_TEXTURE_EDGE = 1024
+        private const val MAX_SCENE_BITMAP_BYTES = 192L * 1024 * 1024
     }
 
     fun load(packageFile: File): TendiesScene {
         val bitmaps = linkedMapOf<String, Bitmap>()
+        val bitmapBudget = BitmapBudget()
         try {
             ZipFile(packageFile).use { zip ->
                 val camlEntries = zip.entries().asSequence()
@@ -43,7 +47,7 @@ class TendiesSceneLoader {
                     val bytes = readLimited(zip.getInputStream(entry), MAX_CAML_BYTES)
                     val basePath = entry.name.substringBeforeLast('/', missingDelimiterValue = "")
                     parseDocument(bytes, basePath) { path ->
-                        bitmaps.getOrPut(path) { decodeBitmap(zip, path) }
+                        bitmaps.getOrPut(path) { decodeBitmap(zip, path, bitmapBudget) }
                     }
                 }
                 return TendiesScene(documents, bitmaps)
@@ -60,10 +64,7 @@ class TendiesSceneLoader {
         basePath: String,
         bitmapLoader: (String) -> Bitmap,
     ): SceneDocument {
-        val prefix = bytes.decodeToString(0, minOf(bytes.size, 1024)).uppercase()
-        if ("<!DOCTYPE" in prefix || "<!ENTITY" in prefix) {
-            throw InvalidTendiesException("CAML with DTD or entities is not allowed")
-        }
+        CamlSceneAnalyzer.analyze(bytes)
 
         val factory = DocumentBuilderFactory.newInstance().apply {
             isNamespaceAware = true
@@ -82,12 +83,23 @@ class TendiesSceneLoader {
             .firstOrNull { it.localTagName() == "CALayer" }
             ?: throw InvalidTendiesException("CAML document has no root layer")
         val imagePaths = linkedSetOf<String>()
-        val root = parseLayer(rootElement, basePath, imagePaths)
+        val root = parseLayer(rootElement, basePath, imagePaths, depth = 1, counter = LayerCounter())
         imagePaths.forEach { bitmapLoader(it) }
         return SceneDocument(root, parseStates(rootElement), parseTransitions(rootElement))
     }
 
-    private fun parseLayer(element: Element, basePath: String, imagePaths: MutableSet<String>): SceneLayer {
+    private fun parseLayer(
+        element: Element,
+        basePath: String,
+        imagePaths: MutableSet<String>,
+        depth: Int,
+        counter: LayerCounter,
+    ): SceneLayer {
+        if (depth > CamlSafety.MAX_XML_DEPTH) throw InvalidTendiesException("CAML nesting is too deep")
+        counter.count++
+        if (counter.count > CamlSafety.MAX_LAYERS) {
+            throw InvalidTendiesException("CAML contains too many layers")
+        }
         val bounds = parseNumbers(element.getAttribute("bounds"), listOf(0f, 0f, 0f, 0f))
         val position = parseNumbers(element.getAttribute("position"), listOf(bounds[2] / 2f, bounds[3] / 2f))
         val anchor = parseNumbers(element.getAttribute("anchorPoint"), listOf(0.5f, 0.5f))
@@ -105,7 +117,7 @@ class TendiesSceneLoader {
             ?.childElements()
             .orEmpty()
             .filter { it.localTagName() == "CALayer" || it.localTagName() == "CATextLayer" }
-            .map { parseLayer(it, basePath, imagePaths) }
+            .map { parseLayer(it, basePath, imagePaths, depth + 1, counter) }
             .sortedBy(SceneLayer::zPosition)
 
         val isText = element.localTagName() == "CATextLayer"
@@ -178,22 +190,42 @@ class TendiesSceneLoader {
             .filter { it.localTagName() == "LKStateTransition" }
             .mapNotNull { transition ->
                 val animations = transition.getElementsByTagNameNS("*", "animation")
-                var longestDurationSeconds: Float? = null
+                val parsedAnimations = mutableListOf<SceneAnimation>()
                 for (index in 0 until animations.length) {
                     val animation = animations.item(index) as? Element ?: continue
                     val duration = animation.getAttribute("duration").toFloatOrNull() ?: continue
-                    longestDurationSeconds = maxOf(longestDurationSeconds ?: duration, duration)
+                    val curve = if (animation.getAttribute("type") == "CASpringAnimation") {
+                        TransitionCurve.Spring(
+                            damping = animation.floatAttribute("damping", 10f),
+                            mass = animation.floatAttribute("mass", 1f),
+                            stiffness = animation.floatAttribute("stiffness", 100f),
+                            initialVelocity = animation.floatAttribute("velocity", 0f),
+                        )
+                    } else {
+                        TransitionCurve.SmoothStep
+                    }
+                    parsedAnimations += SceneAnimation(
+                        keyPath = animation.getAttribute("keyPath"),
+                        beginMillis = animation.floatAttribute("beginTime", 0f).coerceAtLeast(0f) * 1_000f,
+                        durationMillis = duration.coerceAtLeast(0f) * 1_000f,
+                        curve = curve,
+                    )
                 }
-                val durationSeconds = longestDurationSeconds ?: return@mapNotNull null
+                val durationMillis = parsedAnimations.maxOfOrNull { it.beginMillis + it.durationMillis }
+                    ?: return@mapNotNull null
+                val primaryCurve = parsedAnimations.maxByOrNull(SceneAnimation::durationMillis)?.curve
+                    ?: TransitionCurve.SmoothStep
                 SceneTransition(
                     fromState = transition.getAttribute("fromState").ifBlank { "*" },
                     toState = transition.getAttribute("toState").ifBlank { "*" },
-                    durationMillis = durationSeconds.coerceAtLeast(0f) * 1_000f,
+                    durationMillis = durationMillis,
+                    curve = primaryCurve,
+                    animations = parsedAnimations,
                 )
             }
     }
 
-    private fun decodeBitmap(zip: ZipFile, path: String): Bitmap {
+    private fun decodeBitmap(zip: ZipFile, path: String, budget: BitmapBudget): Bitmap {
         val entry = zip.getEntry(path) ?: throw InvalidTendiesException("Missing image asset: $path")
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         zip.getInputStream(entry).use { BitmapFactory.decodeStream(it, null, bounds) }
@@ -202,8 +234,9 @@ class TendiesSceneLoader {
         }
         var sampleSize = 1
         while (
-            bounds.outWidth.toLong() / sampleSize * (bounds.outHeight.toLong() / sampleSize) >
-            MAX_BITMAP_PIXELS
+            bounds.outWidth / sampleSize > MAX_TEXTURE_EDGE ||
+            bounds.outHeight / sampleSize > MAX_TEXTURE_EDGE ||
+            bounds.outWidth.toLong() / sampleSize * (bounds.outHeight.toLong() / sampleSize) > MAX_BITMAP_PIXELS
         ) {
             sampleSize *= 2
         }
@@ -230,6 +263,11 @@ class TendiesSceneLoader {
             decoded
         }
         result.prepareToDraw()
+        budget.bytes += result.allocationByteCount
+        if (budget.bytes > MAX_SCENE_BITMAP_BYTES) {
+            result.recycle()
+            throw InvalidTendiesException("Decoded scene exceeds the bitmap memory limit")
+        }
         return result
     }
 
@@ -302,4 +340,8 @@ class TendiesSceneLoader {
             (nodes.item(index) as? Element)?.let(::add)
         }
     }
+
+    private class LayerCounter(var count: Int = 0)
+
+    private class BitmapBudget(var bytes: Long = 0)
 }

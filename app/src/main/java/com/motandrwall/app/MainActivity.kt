@@ -25,9 +25,11 @@ import com.motandrwall.app.wallpaper.TendiesWallpaperService
 import com.motandrwall.app.ui.TendiesPreviewView
 import java.io.FileInputStream
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 class MainActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
+    private val loadGeneration = AtomicInteger()
     private lateinit var status: TextView
     private lateinit var importButton: Button
     private lateinit var progress: ProgressBar
@@ -41,6 +43,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        loadGeneration.incrementAndGet()
         worker.shutdownNow()
         super.onDestroy()
     }
@@ -63,6 +66,7 @@ class MainActivity : Activity() {
     }
 
     private fun importUri(uri: Uri) {
+        val generation = loadGeneration.incrementAndGet()
         setBusy(true)
         status.text = "Inspecting package…"
         worker.execute {
@@ -70,13 +74,24 @@ class MainActivity : Activity() {
                 val input = contentResolver.openInputStream(uri)
                     ?: error("The selected document cannot be opened")
                 val imported = TendiesImporter(filesDir.resolve("imports")).import(input)
+                val scene = TendiesSceneLoader().load(imported.file)
+                if (generation != loadGeneration.get()) {
+                    scene.close()
+                    return@runCatching null
+                }
                 TendiesSelectionStore(this).select(imported.file)
-                imported to TendiesSceneLoader().load(imported.file)
+                imported to scene
             }
             runOnUiThread {
+                if (generation != loadGeneration.get()) {
+                    result.getOrNull()?.second?.close()
+                    return@runOnUiThread
+                }
                 setBusy(false)
                 result.fold(
-                    onSuccess = { (imported, scene) -> showImported(imported, scene) },
+                    onSuccess = { loaded ->
+                        loaded?.let { (imported, scene) -> showImported(imported, scene) }
+                    },
                     onFailure = {
                         Log.e(TAG, "Package import failed", it)
                         status.text = "Import failed\n\n${it.message ?: it.javaClass.simpleName}"
@@ -87,27 +102,39 @@ class MainActivity : Activity() {
     }
 
     private fun loadSelectedOrDefault() {
+        val generation = loadGeneration.incrementAndGet()
         setBusy(true)
         status.text = "Loading Roxy…"
         worker.execute {
             val result = runCatching {
                 val store = TendiesSelectionStore(this)
                 val existing = store.selectedFile()
-                val imported = if (existing != null) {
+                val needsSelection = existing == null
+                val imported = if (!needsSelection) {
                     val report = FileInputStream(existing).use(TendiesPackageAnalyzer::analyze)
                     ImportedTendies(existing, existing.nameWithoutExtension, report)
                 } else {
                     val bundled = assets.open(DEFAULT_PACKAGE_ASSET)
-                    TendiesImporter(filesDir.resolve("imports")).import(bundled).also {
-                        store.select(it.file)
-                    }
+                    TendiesImporter(filesDir.resolve("imports")).import(bundled)
                 }
-                imported to TendiesSceneLoader().load(imported.file)
+                val scene = TendiesSceneLoader().load(imported.file)
+                if (generation != loadGeneration.get()) {
+                    scene.close()
+                    return@runCatching null
+                }
+                if (needsSelection) store.select(imported.file)
+                imported to scene
             }
             runOnUiThread {
+                if (generation != loadGeneration.get()) {
+                    result.getOrNull()?.second?.close()
+                    return@runOnUiThread
+                }
                 setBusy(false)
                 result.fold(
-                    onSuccess = { (imported, scene) -> showImported(imported, scene) },
+                    onSuccess = { loaded ->
+                        loaded?.let { (imported, scene) -> showImported(imported, scene) }
+                    },
                     onFailure = {
                         Log.e(TAG, "Default import failed", it)
                         status.text = "Default import failed\n\n${it.message ?: it.javaClass.simpleName}"
@@ -143,7 +170,7 @@ class MainActivity : Activity() {
             report.warnings.forEach { appendLine("• $it") }
         }
         appendLine()
-        append("Scene rendering is the next implementation step.")
+        append("Ready for the Android live wallpaper preview.")
     }
 
     private fun setBusy(busy: Boolean) {

@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -23,20 +24,71 @@ import com.motandrwall.app.tendies.TendiesSelectionStore
 import com.motandrwall.app.tendies.scene.TendiesScene
 import com.motandrwall.app.tendies.scene.TendiesSceneLoader
 import com.motandrwall.app.tendies.scene.TendiesSceneRenderer
+import com.motandrwall.app.tendies.scene.ScenePose
+import com.motandrwall.app.tendies.scene.SceneTransition
 import java.util.concurrent.Executors
 import kotlin.math.roundToLong
 
 class TendiesWallpaperService : WallpaperService() {
-    override fun onCreateEngine(): Engine = TendiesEngine()
+    private val loader = Executors.newSingleThreadExecutor()
+    private val serviceHandler = Handler(Looper.getMainLooper())
+    private val engines = linkedSetOf<TendiesEngine>()
+    private val selectionStore by lazy { TendiesSelectionStore(this) }
+    private val selectionListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == TendiesSelectionStore.KEY_FILE_NAME) {
+            loadSelectedScene()
+        }
+    }
+    @Volatile private var serviceDestroyed = false
+    private var sharedScene: TendiesScene? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        selectionStore.registerListener(selectionListener)
+        loadSelectedScene()
+    }
+
+    override fun onCreateEngine(): Engine = TendiesEngine().also(engines::add)
+
+    override fun onDestroy() {
+        serviceDestroyed = true
+        selectionStore.unregisterListener(selectionListener)
+        loader.shutdownNow()
+        sharedScene?.close()
+        sharedScene = null
+        super.onDestroy()
+    }
+
+    private fun loadSelectedScene() {
+        val selected = selectionStore.selectedFile() ?: return
+        loader.execute {
+            val result = runCatching { TendiesSceneLoader().load(selected) }
+            val loaded = result.getOrElse {
+                Log.e(LOG_TAG, "Could not load selected scene: ${selected.name}", it)
+                return@execute
+            }
+            if (serviceDestroyed) {
+                loaded.close()
+                return@execute
+            }
+            serviceHandler.post {
+                if (serviceDestroyed) {
+                    loaded.close()
+                    return@post
+                }
+                val previous = sharedScene
+                sharedScene = loaded
+                engines.toList().forEach { it.onSceneAvailable(loaded) }
+                previous?.close()
+            }
+        }
+    }
 
     private inner class TendiesEngine : Engine() {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val renderer = TendiesSceneRenderer()
-        private val loader = Executors.newSingleThreadExecutor()
         private val choreographer = Choreographer.getInstance()
         private val mainHandler = Handler(Looper.getMainLooper())
-        private val sceneLock = Any()
-        private var scene: TendiesScene? = null
         private var destroyed = false
         private var engineVisible = false
         private var displayedState = "Unlock"
@@ -49,6 +101,12 @@ class TendiesWallpaperService : WallpaperService() {
         private var animationFrameCount = 0
         private var animationDrawNanos = 0L
         private var animationMaxDrawNanos = 0L
+        private var animationLinearProgress = 1f
+        private var displayedPose: ScenePose? = null
+        private var animationFromPose: ScenePose? = null
+        private var animationToPose: ScenePose? = null
+        private var animationTransition: SceneTransition? = null
+        private var animationRunning = false
         private var canvasBackendLogged = false
         private val keyguardCheck = object : Runnable {
             override fun run() {
@@ -99,7 +157,7 @@ class TendiesWallpaperService : WallpaperService() {
                 registerReceiver(screenReceiver, filter)
             }
             logState("engine-created")
-            loadSelectedScene()
+            sharedScene?.let(::onSceneAvailable)
         }
 
         override fun onVisibilityChanged(visible: Boolean) {
@@ -112,10 +170,10 @@ class TendiesWallpaperService : WallpaperService() {
             }
             requestAnimationFrameRate(surfaceHolder)
             val state = currentSystemState()
-            if (displayedState == state) {
-                showStateImmediately(state)
-            } else if (animationTo == state) {
+            if (animationRunning && animationTo == state) {
                 scheduleAnimation()
+            } else if (displayedState == state) {
+                showStateImmediately(state)
             } else {
                 transitionTo(state)
             }
@@ -165,58 +223,43 @@ class TendiesWallpaperService : WallpaperService() {
             cancelAnimationCallbacks()
             mainHandler.removeCallbacks(keyguardCheck)
             runCatching { unregisterReceiver(screenReceiver) }
-            loader.shutdownNow()
-            synchronized(sceneLock) {
-                scene?.close()
-                scene = null
-            }
+            engines.remove(this)
             super.onDestroy()
         }
 
-        private fun loadSelectedScene() {
-            val selected = TendiesSelectionStore(this@TendiesWallpaperService).selectedFile()
-                ?: return
-            loader.execute {
-                val loaded = runCatching { TendiesSceneLoader().load(selected) }.getOrNull() ?: return@execute
-                if (destroyed) {
-                    loaded.close()
-                    return@execute
-                }
-                mainHandler.post {
-                    if (destroyed) {
-                        loaded.close()
-                        return@post
-                    }
-                    synchronized(sceneLock) {
-                        scene?.close()
-                        scene = loaded
-                    }
-                    val state = currentSystemState()
-                    showStateImmediately(state)
-                    logState("scene-loaded states=${loaded.documents.flatMap { it.states.keys }.distinct()}")
-                }
-            }
+        fun onSceneAvailable(loaded: TendiesScene) {
+            if (destroyed) return
+            val state = currentSystemState()
+            showStateImmediately(state)
+            logState("scene-loaded states=${loaded.documents.flatMap { it.states.keys }.distinct()}")
         }
 
         private fun transitionTo(targetState: String) {
-            if (targetState == animationTo && targetState != displayedState) return
+            if (animationRunning && targetState == animationTo) return
+            val loaded = sharedScene
+            val currentPose = loaded?.let(::captureCurrentPose)
+            val wasAnimating = animationRunning
+            val transitionSourceState = if (wasAnimating) animationTo else displayedState
             cancelAnimationCallbacks()
-            if (targetState == displayedState) {
+            if (targetState == displayedState && !wasAnimating) {
                 animationFrom = targetState
                 animationTo = targetState
                 if (engineVisible) drawFrame()
                 return
             }
-            animationFrom = displayedState
+            animationFrom = transitionSourceState
             animationTo = targetState
+            animationFromPose = currentPose ?: loaded?.pose(displayedState)
+            animationToPose = loaded?.pose(targetState)
             animationStartedAtNanos = 0L
-            animationDurationMillis = synchronized(sceneLock) {
-                scene?.transitionDurationMillis(animationFrom, animationTo)
-            } ?: DEFAULT_TRANSITION_MILLIS
+            animationTransition = loaded?.transition(animationFrom, animationTo)
+            animationDurationMillis = animationTransition?.durationMillis ?: DEFAULT_TRANSITION_MILLIS
             animationUsesTimer = targetState == "Sleep" && !isDeviceInteractive()
             animationFrameCount = 0
             animationDrawNanos = 0L
             animationMaxDrawNanos = 0L
+            animationLinearProgress = 0f
+            animationRunning = true
             logState("transition=$animationFrom->$animationTo durationMs=$animationDurationMillis")
             if (engineVisible) postAnimationFrame()
         }
@@ -228,6 +271,7 @@ class TendiesWallpaperService : WallpaperService() {
             animationFrameCount = 0
             animationDrawNanos = 0L
             animationMaxDrawNanos = 0L
+            animationRunning = true
             postAnimationFrame()
         }
 
@@ -237,6 +281,12 @@ class TendiesWallpaperService : WallpaperService() {
             animationFrom = state
             animationTo = state
             animationStartedAtNanos = 0L
+            animationLinearProgress = 1f
+            displayedPose = sharedScene?.pose(state)
+            animationFromPose = displayedPose
+            animationToPose = displayedPose
+            animationTransition = null
+            animationRunning = false
         }
 
         private fun showStateImmediately(state: String) {
@@ -269,20 +319,20 @@ class TendiesWallpaperService : WallpaperService() {
         }
 
         private fun drawFrame(
-            fromState: String = displayedState,
-            toState: String = displayedState,
+            fromPose: ScenePose? = displayedPose,
+            toPose: ScenePose? = displayedPose,
             progress: Float = 1f,
         ) {
             var canvas: Canvas? = null
             try {
                 canvas = lockRenderCanvas() ?: return
-                synchronized(sceneLock) {
-                    val loaded = scene
-                    if (loaded != null) {
-                        renderer.render(canvas, loaded, fromState, toState, progress)
-                    } else {
-                        drawPlaceholder(canvas)
-                    }
+                val loaded = sharedScene
+                if (loaded != null) {
+                    val start = fromPose ?: loaded.pose(displayedState)
+                    val end = toPose ?: start
+                    renderer.render(canvas, loaded, start, end, animationTransition, progress)
+                } else {
+                    drawPlaceholder(canvas)
                 }
             } finally {
                 canvas?.let(surfaceHolder::unlockCanvasAndPost)
@@ -291,12 +341,15 @@ class TendiesWallpaperService : WallpaperService() {
 
         private fun renderAnimationFrame(frameTimeNanos: Long) {
             if (destroyed || !engineVisible) return
-            if (animationStartedAtNanos == 0L) animationStartedAtNanos = frameTimeNanos
+            if (animationStartedAtNanos == 0L) {
+                animationStartedAtNanos = frameTimeNanos -
+                    (animationLinearProgress * animationDurationMillis * 1_000_000L).toLong()
+            }
             val elapsedMillis = (frameTimeNanos - animationStartedAtNanos) / 1_000_000f
             val linear = (elapsedMillis / animationDurationMillis.coerceAtLeast(1f)).coerceIn(0f, 1f)
-            val eased = linear * linear * (3f - 2f * linear)
+            animationLinearProgress = linear
             val drawStartedAt = System.nanoTime()
-            drawFrame(animationFrom, animationTo, eased)
+            drawFrame(animationFromPose, animationToPose, linear)
             val drawNanos = System.nanoTime() - drawStartedAt
             animationFrameCount += 1
             animationDrawNanos += drawNanos
@@ -305,10 +358,18 @@ class TendiesWallpaperService : WallpaperService() {
                 postAnimationFrame()
             } else {
                 displayedState = animationTo
+                displayedPose = animationToPose
+                animationRunning = false
                 val averageMillis = animationDrawNanos / animationFrameCount.coerceAtLeast(1) / 1_000_000f
                 val maxMillis = animationMaxDrawNanos / 1_000_000f
                 Log.i(LOG_TAG, "transition-complete frames=$animationFrameCount avgMs=$averageMillis maxMs=$maxMillis")
             }
+        }
+
+        private fun captureCurrentPose(loaded: TendiesScene): ScenePose {
+            val start = animationFromPose ?: displayedPose ?: loaded.pose(displayedState)
+            val end = animationToPose ?: start
+            return loaded.interpolatePose(start, end, animationTransition, animationLinearProgress)
         }
 
         private fun postAnimationFrame() {
