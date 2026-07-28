@@ -108,6 +108,7 @@ class TendiesWallpaperService : WallpaperService() {
         private var animationTransition: SceneTransition? = null
         private var animationRunning = false
         private var canvasBackendLogged = false
+        private var keyguardGoingAway = false
         private val keyguardCheck = object : Runnable {
             override fun run() {
                 if (destroyed || !engineVisible || !isDeviceInteractive()) return
@@ -214,6 +215,7 @@ class TendiesWallpaperService : WallpaperService() {
             when (action) {
                 COMMAND_WAKING_UP -> handleWakingUp()
                 COMMAND_GOING_TO_SLEEP -> handleGoingToSleep()
+                COMMAND_KEYGUARD_GOING_AWAY -> handleKeyguardGoingAway()
             }
             return super.onCommand(action, x, y, z, extras, resultRequested)
         }
@@ -296,11 +298,13 @@ class TendiesWallpaperService : WallpaperService() {
         }
 
         private fun handleGoingToSleep() {
+            keyguardGoingAway = false
             mainHandler.removeCallbacks(keyguardCheck)
             transitionTo("Sleep")
         }
 
         private fun handleWakingUp() {
+            keyguardGoingAway = false
             requestAnimationFrameRate(surfaceHolder)
             val state = currentSystemState()
             if (state != animationTo) transitionTo(state)
@@ -308,6 +312,17 @@ class TendiesWallpaperService : WallpaperService() {
         }
 
         private fun handleUnlocked() {
+            keyguardGoingAway = false
+            mainHandler.removeCallbacks(keyguardCheck)
+            requestAnimationFrameRate(surfaceHolder)
+            transitionTo("Unlock")
+        }
+
+        private fun handleKeyguardGoingAway() {
+            // SystemUI has committed the unlock gesture and is starting its own
+            // keyguard exit animation. Keyguard still reports as locked here, so
+            // stop polling before it can push the wallpaper back to Locked.
+            keyguardGoingAway = true
             mainHandler.removeCallbacks(keyguardCheck)
             requestAnimationFrameRate(surfaceHolder)
             transitionTo("Unlock")
@@ -442,7 +457,7 @@ class TendiesWallpaperService : WallpaperService() {
         }
 
         private fun currentSystemState(): String {
-            return if (isKeyguardLocked()) "Locked" else "Unlock"
+            return if (keyguardGoingAway || !isKeyguardLocked()) "Unlock" else "Locked"
         }
 
         private fun isKeyguardLocked(): Boolean {
@@ -484,6 +499,7 @@ class TendiesWallpaperService : WallpaperService() {
         const val LOG_TAG = "Motandrwall"
         const val COMMAND_WAKING_UP = "android.wallpaper.wakingup"
         const val COMMAND_GOING_TO_SLEEP = "android.wallpaper.goingtosleep"
+        const val COMMAND_KEYGUARD_GOING_AWAY = "android.wallpaper.keyguardgoingaway"
         const val DEFAULT_FRAME_RATE = 60f
         const val DEFAULT_FRAME_DELAY_MILLIS = 16L
         const val MIN_FRAME_DELAY_MILLIS = 8L
