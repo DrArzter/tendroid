@@ -91,5 +91,3 @@ Every push to `main` repeats the tests and lint, builds the signed APK, and publ
 ## Project status
 
 Tendroid is an experimental compatibility renderer, not an Apple or Android system component. OEM lock-screen behavior differs, and some transitions necessarily use the nearest signal available from Android's public wallpaper APIs.
-
-The bundled Roxy package is retained as a compatibility fixture and default demo. Its artwork and the original `.tendies` format may contain third-party material; verify redistribution rights before repackaging or distributing those assets separately.
