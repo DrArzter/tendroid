@@ -33,6 +33,10 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".gallery.GalleryActivity"
+            android:exported="false" />
+
         <service
             android:name=".wallpaper.TendiesWallpaperService"
             android:exported="true"

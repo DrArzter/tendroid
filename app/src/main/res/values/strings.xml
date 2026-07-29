@@ -6,6 +6,7 @@
     <string name="build_label">Build %1$d</string>
     <string name="choose_tendies">Import .tendies</string>
     <string name="open_wallpaper_preview">Set wallpaper</string>
+    <string name="open_gallery">Browse gallery</string>
     <string name="current_wallpaper">CURRENT WALLPAPER</string>
     <string name="wallpaper_details">Package details</string>
     <string name="no_package">No package loaded yet.</string>
@@ -20,4 +21,21 @@
     <string name="check_updates">Check for updates</string>
     <string name="check_again">Check again</string>
     <string name="install_update">Download update</string>
+    <string name="gallery_title">Gallery</string>
+    <string name="gallery_description">Community wallpapers, verified before Tendroid imports them.</string>
+    <string name="gallery_loading">Loading the community catalog…</string>
+    <string name="gallery_empty">The gallery is ready, but no community wallpapers have been published yet.</string>
+    <string name="gallery_unavailable">Could not load the gallery. %1$s</string>
+    <string name="gallery_install">Install wallpaper</string>
+    <string name="gallery_installing">Downloading and verifying %1$s…</string>
+    <string name="gallery_installed">%1$s is installed and selected. The active Tendroid wallpaper will reload automatically.</string>
+    <string name="gallery_installed_button">Installed</string>
+    <string name="gallery_install_failed">Could not install the wallpaper. %1$s</string>
+    <string name="gallery_requires_build">Requires build %1$d</string>
+    <string name="gallery_submit">Submit a wallpaper</string>
+    <string name="gallery_refresh">Refresh catalog</string>
+    <plurals name="gallery_count">
+        <item quantity="one">%1$d community wallpaper</item>
+        <item quantity="other">%1$d community wallpapers</item>
+    </plurals>
 </resources>
