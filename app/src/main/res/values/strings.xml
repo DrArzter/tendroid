@@ -9,6 +9,7 @@
     <string name="open_gallery">Browse gallery</string>
     <string name="current_wallpaper">CURRENT WALLPAPER</string>
     <string name="wallpaper_details">Package details</string>
+    <string name="loading_wallpaper">Loading wallpaper…</string>
     <string name="no_package">No package loaded yet.</string>
     <string name="updates">App updates</string>
     <string name="update_initial">Installed build %1$d. Checking GitHub Releases…</string>

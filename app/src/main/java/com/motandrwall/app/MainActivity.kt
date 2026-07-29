@@ -50,7 +50,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(buildContent())
         val incomingPackage = intent?.data
-        if (incomingPackage != null) importUri(incomingPackage) else loadSelectedOrDefault()
+        if (incomingPackage != null) importUri(incomingPackage) else loadSelectedPackage()
         checkForUpdates(silent = true)
     }
 
@@ -114,29 +114,21 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun loadSelectedOrDefault() {
+    private fun loadSelectedPackage() {
         val generation = loadGeneration.incrementAndGet()
         setBusy(true)
-        status.text = "Loading Roxy…"
+        status.text = getString(R.string.loading_wallpaper)
         worker.execute {
             val result = runCatching {
-                val store = TendiesSelectionStore(this)
-                val existing = store.selectedFile()
-                val needsSelection = existing == null
-                val refreshBundledDefault = shouldRefreshBundledDefault(existing)
-                val imported = if (!needsSelection && !refreshBundledDefault) {
-                    val report = FileInputStream(existing).use(TendiesPackageAnalyzer::analyze)
-                    ImportedTendies(existing, existing.nameWithoutExtension, report)
-                } else {
-                    val bundled = assets.open(DEFAULT_PACKAGE_ASSET)
-                    TendiesImporter(filesDir.resolve("imports")).import(bundled)
-                }
+                val existing = TendiesSelectionStore(this).selectedFile()
+                    ?: return@runCatching null
+                val report = FileInputStream(existing).use(TendiesPackageAnalyzer::analyze)
+                val imported = ImportedTendies(existing, existing.nameWithoutExtension, report)
                 val scene = previewSceneLoader().load(imported.file)
                 if (generation != loadGeneration.get()) {
                     scene.close()
                     return@runCatching null
                 }
-                if (needsSelection || refreshBundledDefault) store.select(imported.file)
                 imported to scene
             }
             runOnUiThread {
@@ -147,11 +139,17 @@ class MainActivity : Activity() {
                 setBusy(false)
                 result.fold(
                     onSuccess = { loaded ->
-                        loaded?.let { (imported, scene) -> showImported(imported, scene) }
+                        if (loaded == null) {
+                            preview.visibility = View.GONE
+                            status.text = getString(R.string.no_package)
+                        } else {
+                            val (imported, scene) = loaded
+                            showImported(imported, scene)
+                        }
                     },
                     onFailure = {
-                        Log.e(TAG, "Default import failed", it)
-                        status.text = "Default import failed\n\n${it.message ?: it.javaClass.simpleName}"
+                        Log.e(TAG, "Selected package load failed", it)
+                        status.text = "Package load failed\n\n${it.message ?: it.javaClass.simpleName}"
                     },
                 )
             }
@@ -397,16 +395,8 @@ class MainActivity : Activity() {
 
     private companion object {
         const val REQUEST_TENDIES = 1001
-        const val DEFAULT_PACKAGE_ASSET = "defaults/Roxy_Migurdia_.tendies"
         const val PREVIEW_MAX_TEXTURE_EDGE = 512
         const val PREVIEW_MAX_BITMAP_BYTES = 32L * 1024 * 1024
         const val TAG = "Motandrwall"
     }
 }
-
-internal fun shouldRefreshBundledDefault(file: java.io.File?): Boolean =
-    file?.nameWithoutExtension in LEGACY_BUNDLED_DEFAULT_IDS
-
-private val LEGACY_BUNDLED_DEFAULT_IDS = setOf(
-    "0f91bb979a9ac39338ebec981b2d1420682d5f0f1e3653d6ddd3def333368164",
-)
