@@ -25,6 +25,12 @@ The lock, AOD, and home states are driven by the source wallpaper's own CAML tra
 </p>
 -->
 
+## Community Gallery
+
+Tendroid can browse the independently maintained [Tendroid Gallery](https://github.com/DrArzter/tendroid-gallery) from inside the app. Catalog packages are size-bounded, restricted to the gallery repository, verified against their published SHA-256, and then processed by the same safe importer as local files.
+
+Creators can submit handmade or AI-assisted wallpapers through a gallery pull request. Each submission contains a manifest, preview, and `.tendies` package, and must declare its author, source, redistribution rights, license, supported states, and minimum Tendroid build. See the [submission guide](https://github.com/DrArzter/tendroid-gallery/blob/main/CONTRIBUTING.md).
+
 ## What it does
 
 - Imports `.tendies` packages through Android's document picker.
