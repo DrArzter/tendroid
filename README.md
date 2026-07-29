@@ -28,6 +28,7 @@ The lock, AOD, and home states are driven by the source wallpaper's own CAML tra
 ## What it does
 
 - Imports `.tendies` packages through Android's document picker.
+- Browses the independently maintained [Tendroid Gallery](https://github.com/DrArzter/tendroid-gallery), verifies each download, and imports it without leaving the app.
 - Renders layered CAML scenes with images, text, nested transforms, opacity, and masks.
 - Maps PosterBoard `Sleep`, `Locked`, and `Unlock` states to Android AOD, lock screen, and home screen.
 - Reproduces per-property timing and `CASpringAnimation` transitions.

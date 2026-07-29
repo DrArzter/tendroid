@@ -24,6 +24,7 @@ import com.motandrwall.app.tendies.TendiesImporter
 import com.motandrwall.app.tendies.TendiesPackageAnalyzer
 import com.motandrwall.app.tendies.TendiesSelectionStore
 import com.motandrwall.app.tendies.scene.TendiesSceneLoader
+import com.motandrwall.app.gallery.GalleryActivity
 import com.motandrwall.app.wallpaper.TendiesWallpaperService
 import com.motandrwall.app.ui.TendiesPreviewView
 import com.motandrwall.app.update.GitHubRelease
@@ -329,6 +330,10 @@ class MainActivity : Activity() {
                     )
                 },
             )
+        }, LinearLayout.LayoutParams(-1, dp(58)).apply { topMargin = dp(10) })
+
+        container.addView(action(getString(R.string.open_gallery), primary = false) {
+            startActivity(Intent(this@MainActivity, GalleryActivity::class.java))
         }, LinearLayout.LayoutParams(-1, dp(58)).apply { topMargin = dp(10) })
 
         container.addView(textView(
