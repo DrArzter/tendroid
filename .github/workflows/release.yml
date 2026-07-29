@@ -30,17 +30,18 @@ jobs:
       - name: Restore persistent APK signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
-          KEYSTORE_PATH: ${{ runner.temp }}/tendroid-debug.keystore
+          KEYSTORE_PATH: ${{ runner.temp }}/tendroid-release.keystore
         run: |
           printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "${KEYSTORE_PATH}"
 
       - name: Test, lint, and build installable APK
         env:
-          TENDROID_SIGNING_STORE_FILE: ${{ runner.temp }}/tendroid-debug.keystore
-        run: ./gradlew testDebugUnitTest lintDebug assembleDebug
+          TENDROID_SIGNING_STORE_FILE: ${{ runner.temp }}/tendroid-release.keystore
+        run: ./gradlew testDebugUnitTest lintRelease assembleRelease
 
       - name: Name release asset
-        run: cp app/build/outputs/apk/debug/app-debug.apk tendroid-debug.apk
+        # Keep the legacy asset name so installed builds can discover the update.
+        run: cp app/build/outputs/apk/release/app-release.apk tendroid-debug.apk
 
       - name: Publish GitHub prerelease
         env:
@@ -49,5 +50,5 @@ jobs:
           gh release create "build-${GITHUB_RUN_NUMBER}" tendroid-debug.apk \
             --target "${GITHUB_SHA}" \
             --title "Tendroid build ${GITHUB_RUN_NUMBER}" \
-            --notes "Automated installable debug build from main (${GITHUB_SHA})." \
+            --notes "Automated signed release build from main (${GITHUB_SHA})." \
             --prerelease
