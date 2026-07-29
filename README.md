@@ -19,11 +19,9 @@
 
 The lock, AOD, and home states are driven by the source wallpaper's own CAML transitions.
 
-<!-- Demo GIF goes here once recorded:
 <p align="center">
   <img src="docs/demo.gif" width="360" alt="Tendroid lock-screen transition demo">
 </p>
--->
 
 ## Community Gallery
 
