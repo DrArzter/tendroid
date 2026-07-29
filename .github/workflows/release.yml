@@ -3,6 +3,14 @@ name: Build and release APK
 on:
   push:
     branches: [main]
+    paths:
+      - "app/**"
+      - "*.gradle.kts"
+      - "gradle.properties"
+      - "gradle/**"
+      - "gradlew"
+      - "gradlew.bat"
+      - ".github/workflows/release.yml"
 
 permissions:
   contents: write
