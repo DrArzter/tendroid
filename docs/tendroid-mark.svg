@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-labelledby="title description">
+  <title id="title">Tendroid</title>
+  <desc id="description">Three folded wallpaper states flowing into one mark.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#303039"/>
+      <stop offset="0.5" stop-color="#24232b"/>
+      <stop offset="1" stop-color="#17171c"/>
+    </linearGradient>
+  </defs>
+  <rect width="108" height="108" rx="25" fill="url(#background)"/>
+  <g transform="translate(-3 -3) translate(54 54) scale(.75 .58) translate(-54 -54)">
+    <path fill="#8d59f5" d="M24 36c0-5 3-9 7-11l16-8c4-2 7 0 7 4v33c0 4-2 7-5 9l-14 9c-3 2-5 5-5 9v5c0 3 2 5 5 4l14-5v7l-15 5c-8 2-11-3-11-10z"/>
+    <path fill="#ff5e61" d="M40 36c0-5 3-9 7-11l16-8c4-2 7 0 7 4v37c0 4-2 7-5 9l-13 8c-3 2-5 6-5 9v3c0 4 3 7 7 5l14-5v7l-15 5c-9 2-14-4-14-12z"/>
+    <path fill="#fff8ef" d="M57 38c0-6 3-10 8-13l14-7c5-2 8 1 8 6v35c0 7-4 10-9 9-6-1-10-6-15-8-3-1-5 0-6 1z"/>
+    <path fill="#8d59f5" d="M58 72c5-2 10 0 15 3 5 3 9 4 14 2v11c0 4-2 7-6 8l-20 5c-4 1-6-2-6-6V78c0-3 1-5 3-6z"/>
+    <circle cx="76" cy="37" r="6" fill="#ff5e61"/>
+  </g>
+</svg>

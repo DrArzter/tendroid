@@ -1,30 +1,79 @@
-# Tendroid
+<p align="center">
+  <img src="docs/tendroid-mark.svg" width="112" height="112" alt="Tendroid icon">
+</p>
 
-Android importer and live wallpaper renderer for Apple PosterBoard `.tendies` packages.
+<h1 align="center">Tendroid</h1>
 
-## Current prototype
+<p align="center">
+  Apple PosterBoard <code>.tendies</code> wallpapers, rendered as native Android live wallpapers.
+</p>
 
-- Opens a `.tendies` document through Android's system file picker.
-- Imports the bundled Roxy package automatically on first launch.
-- Copies the package into app-private storage using a SHA-256 content ID.
-- Applies entry-count, compressed-size, uncompressed-size, path, and XML safety checks.
-- Reads layered CAML scenes and reports images, text layers, states, and animation types.
-- Renders CAML image/text layer hierarchies, transforms, opacity, colors, and state overrides.
-- Displays the selected scene both in-app and through Android `WallpaperService`.
-- Detects active package scripts and reports them as unsupported; inert Apple template scripts are ignored.
-- Checks GitHub Releases for newer builds and verifies the published SHA-256 before opening Android's installer.
+<p align="center">
+  <a href="https://github.com/DrArzter/tendroid/actions/workflows/release.yml"><img alt="Build" src="https://github.com/DrArzter/tendroid/actions/workflows/release.yml/badge.svg"></a>
+  <a href="https://github.com/DrArzter/tendroid/releases"><img alt="Release" src="https://img.shields.io/github/v/release/DrArzter/tendroid?include_prereleases&label=release"></a>
+  <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white">
+  <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-2.3-7F52FF?logo=kotlin&logoColor=white">
+</p>
+
+## Demo
+
+The lock, AOD, and home states are driven by the source wallpaper's own CAML transitions.
+
+<!-- Demo GIF goes here once recorded:
+<p align="center">
+  <img src="docs/demo.gif" width="360" alt="Tendroid lock-screen transition demo">
+</p>
+-->
+
+## What it does
+
+- Imports `.tendies` packages through Android's document picker.
+- Renders layered CAML scenes with images, text, nested transforms, opacity, and masks.
+- Maps PosterBoard `Sleep`, `Locked`, and `Unlock` states to Android AOD, lock screen, and home screen.
+- Reproduces per-property timing and `CASpringAnimation` transitions.
+- Tracks the device's active refresh mode instead of forcing a fixed frame rate.
+- Restores a cached AOD frame if Android recreates the wallpaper process.
+- Checks GitHub Releases in-app and verifies the published SHA-256 before opening Android's installer.
+
+## Install
+
+1. Download `tendroid-debug.apk` from [GitHub Releases](https://github.com/DrArzter/tendroid/releases).
+2. Allow installs from the browser or file manager when Android asks.
+3. Open Tendroid, import a `.tendies` package, then choose **Set live wallpaper**.
+
+Tendroid currently ships as a prerelease build signed with a persistent project key, so later builds can update it in place. Do not install APKs carrying a different signing certificate over an existing installation.
+
+## Compatibility
+
+| Feature | Status |
+| --- | --- |
+| `CALayer`, `CGImage`, `CATextLayer` | Supported |
+| Nested transforms and state overrides | Supported |
+| `Sleep` / `Locked` / `Unlock` | Supported |
+| Per-key-path timing and spring curves | Supported |
+| Samsung AOD and adaptive refresh rate | Tested on device |
+| Early unlock gesture signal | Supported where the OEM forwards it |
+| Continuous raw lock-screen swipe progress | Not exposed to third-party wallpapers on every OEM |
+| PosterBoard JavaScript host objects | Not supported |
+
+JavaScript is not executed. PosterBoard scripts depend on Apple-only objects such as `layer`, `document`, and `system`; safely supporting them requires a constrained compatibility runtime, not a generic JavaScript engine.
+
+## Import safety
+
+Packages are copied into app-private storage under a SHA-256 content ID. Before rendering, Tendroid enforces limits for entry count, compressed and expanded sizes, XML depth, texture dimensions, and decoded bitmap memory. It also rejects duplicate entries, traversal paths, external entities, DTDs, and oversized CAML documents.
 
 ## Build
 
-The project uses JDK 17-compatible bytecode, Gradle Wrapper 9.4.1, Android Gradle Plugin 9.2.0, and Android SDK 36.
+Requirements: JDK 17 and Android SDK 36.
 
 ```bash
-GRADLE_USER_HOME="$PWD/.gradle" ./gradlew testDebugUnitTest assembleDebug
+GRADLE_USER_HOME="$PWD/.gradle" \
+./gradlew testDebugUnitTest lintDebug assembleDebug
 ```
 
-The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
 
-To include a real package in the parser test without committing its assets:
+To run the parser suite against a real package without committing it:
 
 ```bash
 GRADLE_USER_HOME="$PWD/.gradle" \
@@ -32,14 +81,10 @@ TENDIES_SAMPLE=/absolute/path/to/sample.tendies \
 ./gradlew testDebugUnitTest --rerun-tasks
 ```
 
-## Supported CAML subset
+Every push to `main` repeats the tests and lint, builds the signed APK, and publishes a GitHub prerelease.
 
-The renderer currently supports `CALayer`, `CGImage`, `CATextLayer`, nested transforms, `LKState` overrides, `Locked`/`Unlock`/`Sleep` state transitions, per-key-path timing, and `CASpringAnimation` parameters.
+## Project status
 
-Every push to `main` runs tests and lint, builds an installable debug-signed APK, and publishes it as a GitHub prerelease. Production distribution should use a persistent release keystore instead.
+Tendroid is an experimental compatibility renderer, not an Apple or Android system component. OEM lock-screen behavior differs, and some transitions necessarily use the nearest signal available from Android's public wallpaper APIs.
 
-The in-app updater can access releases without credentials only when the release repository is public. The repository is currently private, so the app reports that the update channel is unavailable rather than embedding a GitHub token in the APK.
-
-JavaScript execution is intentionally not enabled. PosterBoard scripts use Apple-specific host objects such as `layer`, `document`, and `system`; supporting active scripts requires a constrained compatibility layer, not just a generic JavaScript engine.
-
-The bundled Roxy asset is intended only for local prototype testing. Confirm its redistribution rights before publishing an APK containing it.
+The bundled Roxy package is retained as a compatibility fixture and default demo. Its artwork and the original `.tendies` format may contain third-party material; verify redistribution rights before repackaging or distributing those assets separately.
