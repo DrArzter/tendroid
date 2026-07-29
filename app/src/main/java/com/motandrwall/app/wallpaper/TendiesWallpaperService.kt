@@ -63,6 +63,20 @@ class TendiesWallpaperService : WallpaperService() {
 
     override fun onCreateEngine(): Engine = TendiesEngine().also(engines::add)
 
+    /**
+     * A wallpaper layer is drawn at display resolution, so the default texture
+     * cap upscales every full-screen asset and leaves it visibly soft. Size the
+     * cap from the display instead, bounded so an oversized package cannot blow
+     * the bitmap budget.
+     */
+    private fun sceneLoader(): TendiesSceneLoader {
+        val metrics = resources.displayMetrics
+        val displayEdge = maxOf(metrics.widthPixels, metrics.heightPixels)
+        return TendiesSceneLoader(
+            maxTextureEdge = displayEdge.coerceIn(MIN_TEXTURE_EDGE, MAX_TEXTURE_EDGE),
+        )
+    }
+
     override fun onDestroy() {
         serviceDestroyed = true
         selectionStore.unregisterListener(selectionListener)
@@ -77,7 +91,7 @@ class TendiesWallpaperService : WallpaperService() {
     private fun loadSelectedScene() {
         val selected = selectedFile ?: return
         loader.execute {
-            val result = runCatching { TendiesSceneLoader().load(selected) }
+            val result = runCatching { sceneLoader().load(selected) }
             val loaded = result.getOrElse {
                 Log.e(LOG_TAG, "Could not load selected scene: ${selected.name}", it)
                 return@execute
@@ -626,6 +640,8 @@ class TendiesWallpaperService : WallpaperService() {
     }
 
     private companion object {
+        const val MIN_TEXTURE_EDGE = 1024
+        const val MAX_TEXTURE_EDGE = 2560
         const val DEFAULT_TRANSITION_MILLIS = 800f
         const val KEYGUARD_CHECK_MILLIS = 100L
         const val LOG_TAG = "Motandrwall"
