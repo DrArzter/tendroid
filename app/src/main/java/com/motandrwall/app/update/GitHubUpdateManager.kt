@@ -109,8 +109,8 @@ class GitHubUpdateManager(private val activity: Activity) : AutoCloseable {
                 }
             }
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
-            if (!actual.equals(release.sha256, ignoreCase = true)) {
-                throw IllegalStateException("Update checksum does not match GitHub")
+            check(actual.equals(release.sha256, ignoreCase = true)) {
+                "Update checksum does not match GitHub"
             }
             if (target.exists() && !target.delete()) throw IllegalStateException("Could not replace old update")
             if (!partial.renameTo(target)) throw IllegalStateException("Could not store update APK")
