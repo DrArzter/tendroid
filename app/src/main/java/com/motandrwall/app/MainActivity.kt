@@ -122,7 +122,8 @@ class MainActivity : Activity() {
                 val store = TendiesSelectionStore(this)
                 val existing = store.selectedFile()
                 val needsSelection = existing == null
-                val imported = if (!needsSelection) {
+                val refreshBundledDefault = shouldRefreshBundledDefault(existing)
+                val imported = if (!needsSelection && !refreshBundledDefault) {
                     val report = FileInputStream(existing).use(TendiesPackageAnalyzer::analyze)
                     ImportedTendies(existing, existing.nameWithoutExtension, report)
                 } else {
@@ -134,7 +135,7 @@ class MainActivity : Activity() {
                     scene.close()
                     return@runCatching null
                 }
-                if (needsSelection) store.select(imported.file)
+                if (needsSelection || refreshBundledDefault) store.select(imported.file)
                 imported to scene
             }
             runOnUiThread {
@@ -397,3 +398,10 @@ class MainActivity : Activity() {
         const val TAG = "Motandrwall"
     }
 }
+
+internal fun shouldRefreshBundledDefault(file: java.io.File?): Boolean =
+    file?.nameWithoutExtension in LEGACY_BUNDLED_DEFAULT_IDS
+
+private val LEGACY_BUNDLED_DEFAULT_IDS = setOf(
+    "0f91bb979a9ac39338ebec981b2d1420682d5f0f1e3653d6ddd3def333368164",
+)
