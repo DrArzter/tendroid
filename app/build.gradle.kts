@@ -2,6 +2,8 @@ plugins {
     id("com.android.application")
 }
 
+val signingStoreFile = providers.environmentVariable("TENDROID_SIGNING_STORE_FILE").orNull
+
 android {
     namespace = "com.motandrwall.app"
     compileSdk = 36
@@ -17,9 +19,9 @@ android {
     }
 
     signingConfigs {
-        getByName("debug") {
-            providers.environmentVariable("TENDROID_SIGNING_STORE_FILE").orNull?.let { signingFile ->
-                storeFile = file(signingFile)
+        if (signingStoreFile != null) {
+            create("release") {
+                storeFile = file(signingStoreFile)
                 storePassword = "android"
                 keyAlias = "androiddebugkey"
                 keyPassword = "android"
@@ -29,6 +31,9 @@ android {
 
     buildTypes {
         release {
+            if (signingStoreFile != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

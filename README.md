@@ -41,7 +41,7 @@ The lock, AOD, and home states are driven by the source wallpaper's own CAML tra
 2. Allow installs from the browser or file manager when Android asks.
 3. Open Tendroid, import a `.tendies` package, then choose **Set live wallpaper**.
 
-Tendroid currently ships as a prerelease build signed with a persistent project key, so later builds can update it in place. Do not install APKs carrying a different signing certificate over an existing installation.
+Tendroid currently ships as a signed prerelease build. The asset keeps its historical `tendroid-debug.apk` filename so older installed builds can discover updates, but the APK itself is a non-debuggable release build. A persistent project key lets later builds update it in place; do not install APKs carrying a different signing certificate over an existing installation.
 
 ## Compatibility
 
@@ -68,10 +68,10 @@ Requirements: JDK 17 and Android SDK 36.
 
 ```bash
 GRADLE_USER_HOME="$PWD/.gradle" \
-./gradlew testDebugUnitTest lintDebug assembleDebug
+./gradlew testDebugUnitTest lintRelease assembleRelease
 ```
 
-The APK is written to `app/build/outputs/apk/debug/app-debug.apk`.
+The unsigned local APK is written to `app/build/outputs/apk/release/app-release-unsigned.apk`. CI supplies the persistent signing key and produces the installable release asset.
 
 To run the parser suite against a real package without committing it:
 
