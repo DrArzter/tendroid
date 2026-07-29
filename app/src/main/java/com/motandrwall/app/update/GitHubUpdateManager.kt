@@ -76,7 +76,7 @@ class GitHubUpdateManager(private val activity: Activity) : AutoCloseable {
                     buildNumber = buildNumber,
                     title = release.optString("name").ifBlank { "Tendroid build $buildNumber" },
                     downloadUrl = asset.getString("browser_download_url"),
-                    sha256 = asset.optString("digest").removePrefix("sha256:").takeIf(String::isNotBlank),
+                    sha256 = parseSha256Digest(asset.optString("digest")),
                 )
             }
         }
@@ -109,7 +109,7 @@ class GitHubUpdateManager(private val activity: Activity) : AutoCloseable {
                 }
             }
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
-            if (release.sha256 != null && !actual.equals(release.sha256, ignoreCase = true)) {
+            if (!actual.equals(release.sha256, ignoreCase = true)) {
                 throw IllegalStateException("Update checksum does not match GitHub")
             }
             if (target.exists() && !target.delete()) throw IllegalStateException("Could not replace old update")
@@ -166,8 +166,20 @@ data class GitHubRelease(
     val buildNumber: Int,
     val title: String,
     val downloadUrl: String,
-    val sha256: String?,
+    val sha256: String,
 )
+
+internal fun parseSha256Digest(value: String): String {
+    val digest = value.removePrefix("sha256:")
+    require(digest.length == SHA256_HEX_LENGTH && digest.all(Char::isHexDigit)) {
+        "GitHub release asset has no valid SHA-256 digest"
+    }
+    return digest.lowercase()
+}
+
+private fun Char.isHexDigit(): Boolean = this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'
+
+private const val SHA256_HEX_LENGTH = 64
 
 sealed interface UpdateCheckResult {
     data object Current : UpdateCheckResult

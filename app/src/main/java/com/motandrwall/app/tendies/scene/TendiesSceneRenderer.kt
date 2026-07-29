@@ -138,9 +138,9 @@ class TendiesSceneRenderer {
             canvas.clipRect(layer.boundsX, layer.boundsY, layer.boundsX + layer.width, layer.boundsY + layer.height)
         }
 
-        paint.alpha = (alpha * 255).toInt()
         layer.backgroundColor?.let { color ->
             paint.color = color
+            paint.alpha = (Color.alpha(color) * alpha).toInt()
             canvas.drawRect(
                 layer.boundsX,
                 layer.boundsY,
@@ -150,6 +150,7 @@ class TendiesSceneRenderer {
             )
         }
         layer.imagePath?.let(scene.bitmaps::get)?.let { bitmap ->
+            paint.alpha = (alpha * 255).toInt()
             canvas.drawBitmap(
                 bitmap,
                 null,
@@ -161,6 +162,7 @@ class TendiesSceneRenderer {
         }
         layer.text?.let { text ->
             paint.color = layer.foregroundColor
+            paint.alpha = (Color.alpha(layer.foregroundColor) * alpha).toInt()
             paint.textSize = layer.fontSize
             paint.textAlign = Paint.Align.CENTER
             val fontKey = layer.fontName.orEmpty()

@@ -19,12 +19,19 @@ import javax.xml.parsers.DocumentBuilderFactory
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-class TendiesSceneLoader {
+class TendiesSceneLoader(
+    private val maxTextureEdge: Int = DEFAULT_MAX_TEXTURE_EDGE,
+    private val maxSceneBitmapBytes: Long = DEFAULT_MAX_SCENE_BITMAP_BYTES,
+) {
+    init {
+        require(maxTextureEdge > 0)
+        require(maxSceneBitmapBytes > 0)
+    }
+
     companion object {
         private const val MAX_CAML_BYTES = 4 * 1024 * 1024
-        private const val MAX_BITMAP_PIXELS = 16_000_000L
-        private const val MAX_TEXTURE_EDGE = 1024
-        private const val MAX_SCENE_BITMAP_BYTES = 192L * 1024 * 1024
+        private const val DEFAULT_MAX_TEXTURE_EDGE = 1024
+        private const val DEFAULT_MAX_SCENE_BITMAP_BYTES = 192L * 1024 * 1024
     }
 
     fun load(packageFile: File): TendiesScene {
@@ -234,9 +241,8 @@ class TendiesSceneLoader {
         }
         var sampleSize = 1
         while (
-            bounds.outWidth / sampleSize > MAX_TEXTURE_EDGE ||
-            bounds.outHeight / sampleSize > MAX_TEXTURE_EDGE ||
-            bounds.outWidth.toLong() / sampleSize * (bounds.outHeight.toLong() / sampleSize) > MAX_BITMAP_PIXELS
+            bounds.outWidth / sampleSize > maxTextureEdge ||
+            bounds.outHeight / sampleSize > maxTextureEdge
         ) {
             sampleSize *= 2
         }
@@ -249,8 +255,8 @@ class TendiesSceneLoader {
                 ?: throw InvalidTendiesException("Could not decode image asset: $path")
         }
         val longestEdge = max(decoded.width, decoded.height)
-        val result = if (longestEdge > MAX_TEXTURE_EDGE) {
-            val scale = MAX_TEXTURE_EDGE.toFloat() / longestEdge
+        val result = if (longestEdge > maxTextureEdge) {
+            val scale = maxTextureEdge.toFloat() / longestEdge
             Bitmap.createScaledBitmap(
                 decoded,
                 (decoded.width * scale).roundToInt().coerceAtLeast(1),
@@ -264,7 +270,7 @@ class TendiesSceneLoader {
         }
         result.prepareToDraw()
         budget.bytes += result.allocationByteCount
-        if (budget.bytes > MAX_SCENE_BITMAP_BYTES) {
+        if (budget.bytes > maxSceneBitmapBytes) {
             result.recycle()
             throw InvalidTendiesException("Decoded scene exceeds the bitmap memory limit")
         }

@@ -40,11 +40,14 @@ class TendiesWallpaperService : WallpaperService() {
     private val frameCache by lazy { WallpaperFrameCache(this) }
     private val selectionListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == TendiesSelectionStore.KEY_FILE_NAME) {
+            selectedFile = selectionStore.selectedFile()
+            loadFallbackFrame(selectedFile)
             loadSelectedScene()
         }
     }
     @Volatile private var serviceDestroyed = false
     private var sharedScene: TendiesScene? = null
+    private var selectedFile: File? = null
     private var sharedSceneFile: File? = null
     private var fallbackFrame: Bitmap? = null
     private var fallbackFrameFileName: String? = null
@@ -53,7 +56,8 @@ class TendiesWallpaperService : WallpaperService() {
     override fun onCreate() {
         super.onCreate()
         selectionStore.registerListener(selectionListener)
-        loadFallbackFrame(selectionStore.selectedFile())
+        selectedFile = selectionStore.selectedFile()
+        loadFallbackFrame(selectedFile)
         loadSelectedScene()
     }
 
@@ -71,7 +75,7 @@ class TendiesWallpaperService : WallpaperService() {
     }
 
     private fun loadSelectedScene() {
-        val selected = selectionStore.selectedFile() ?: return
+        val selected = selectedFile ?: return
         loader.execute {
             val result = runCatching { TendiesSceneLoader().load(selected) }
             val loaded = result.getOrElse {
@@ -118,7 +122,7 @@ class TendiesWallpaperService : WallpaperService() {
             result.onFailure { Log.w(LOG_TAG, "Could not cache Sleep frame", it) }
             serviceHandler.post {
                 if (frameCacheWritePendingFor == selected.name) frameCacheWritePendingFor = null
-                if (!serviceDestroyed && selectionStore.selectedFile()?.name == selected.name) {
+                if (!serviceDestroyed && selectedFile?.name == selected.name) {
                     loadFallbackFrame(selected)
                     Log.i(LOG_TAG, "sleep-frame-cached width=$width height=$height")
                 }
@@ -415,7 +419,7 @@ class TendiesWallpaperService : WallpaperService() {
             toPose: ScenePose? = displayedPose,
             progress: Float = 1f,
         ) {
-            val selected = selectionStore.selectedFile()
+            val selected = selectedFile
             if (sharedScene == null && selected != null && fallbackFrame == null) {
                 // Do not post an empty black buffer while a selected package is
                 // loading. On engine recreation this lets SurfaceFlinger retain
