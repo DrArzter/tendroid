@@ -86,7 +86,7 @@ class MainActivity : Activity() {
                 val input = contentResolver.openInputStream(uri)
                     ?: error("The selected document cannot be opened")
                 val imported = TendiesImporter(filesDir.resolve("imports")).import(input)
-                val scene = TendiesSceneLoader().load(imported.file)
+                val scene = previewSceneLoader().load(imported.file)
                 if (generation != loadGeneration.get()) {
                     scene.close()
                     return@runCatching null
@@ -129,7 +129,7 @@ class MainActivity : Activity() {
                     val bundled = assets.open(DEFAULT_PACKAGE_ASSET)
                     TendiesImporter(filesDir.resolve("imports")).import(bundled)
                 }
-                val scene = TendiesSceneLoader().load(imported.file)
+                val scene = previewSceneLoader().load(imported.file)
                 if (generation != loadGeneration.get()) {
                     scene.close()
                     return@runCatching null
@@ -164,6 +164,11 @@ class MainActivity : Activity() {
         preview.show(scene)
         status.text = formatReport(imported)
     }
+
+    private fun previewSceneLoader() = TendiesSceneLoader(
+        maxTextureEdge = PREVIEW_MAX_TEXTURE_EDGE,
+        maxSceneBitmapBytes = PREVIEW_MAX_BITMAP_BYTES,
+    )
 
     private fun formatReport(imported: ImportedTendies): String = buildString {
         val report = imported.report
@@ -387,6 +392,8 @@ class MainActivity : Activity() {
     private companion object {
         const val REQUEST_TENDIES = 1001
         const val DEFAULT_PACKAGE_ASSET = "defaults/Roxy_Migurdia_.tendies"
+        const val PREVIEW_MAX_TEXTURE_EDGE = 512
+        const val PREVIEW_MAX_BITMAP_BYTES = 32L * 1024 * 1024
         const val TAG = "Motandrwall"
     }
 }
