@@ -147,6 +147,7 @@ class TendiesWallpaperService : WallpaperService() {
     private inner class TendiesEngine : Engine() {
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val renderer = TendiesSceneRenderer()
+        private val gpuRenderer = GpuWallpaperRenderer(LOG_TAG)
         private val choreographer = Choreographer.getInstance()
         private val mainHandler = Handler(Looper.getMainLooper())
         private var destroyed = false
@@ -253,7 +254,13 @@ class TendiesWallpaperService : WallpaperService() {
 
         override fun onSurfaceCreated(holder: SurfaceHolder) {
             super.onSurfaceCreated(holder)
+            gpuRenderer.onSurfaceCreated()
             requestAnimationFrameRate(holder)
+        }
+
+        override fun onSurfaceDestroyed(holder: SurfaceHolder) {
+            gpuRenderer.onSurfaceDestroyed()
+            super.onSurfaceDestroyed(holder)
         }
 
         override fun onWallpaperFlagsChanged(which: Int) {
@@ -288,6 +295,7 @@ class TendiesWallpaperService : WallpaperService() {
             destroyed = true
             cancelAnimationCallbacks()
             mainHandler.removeCallbacks(keyguardCheck)
+            gpuRenderer.release()
             runCatching { unregisterReceiver(screenReceiver) }
             engines.remove(this)
             super.onDestroy()
@@ -432,6 +440,7 @@ class TendiesWallpaperService : WallpaperService() {
             fromPose: ScenePose? = displayedPose,
             toPose: ScenePose? = displayedPose,
             progress: Float = 1f,
+            frameTimeNanos: Long = System.nanoTime(),
         ) {
             val selected = selectedFile
             if (sharedScene == null && selected != null && fallbackFrame == null) {
@@ -440,10 +449,40 @@ class TendiesWallpaperService : WallpaperService() {
                 // WallpaperManager's previous snapshot until real pixels exist.
                 return
             }
+            val loaded = sharedScene
+            val frame = surfaceHolder.surfaceFrame
+            if (loaded != null) {
+                val start = fromPose ?: loaded.pose(displayedState)
+                val end = toPose ?: start
+                if (
+                    gpuRenderer.render(
+                        surface = surfaceHolder.surface,
+                        width = frame.width(),
+                        height = frame.height(),
+                        scene = loaded,
+                        fromPose = start,
+                        toPose = end,
+                        transition = animationTransition,
+                        progress = progress,
+                        frameTimeNanos = frameTimeNanos,
+                    )
+                ) return
+            } else if (
+                gpuRenderer.renderFallback(
+                    surface = surfaceHolder.surface,
+                    width = frame.width(),
+                    height = frame.height(),
+                    bitmap = fallbackFrame
+                        ?.takeIf { fallbackFrameFileName == selected?.name && !it.isRecycled },
+                    frameTimeNanos = frameTimeNanos,
+                )
+            ) {
+                return
+            }
+
             var canvas: Canvas? = null
             try {
                 canvas = lockRenderCanvas() ?: return
-                val loaded = sharedScene
                 if (loaded != null) {
                     val start = fromPose ?: loaded.pose(displayedState)
                     val end = toPose ?: start
@@ -466,7 +505,7 @@ class TendiesWallpaperService : WallpaperService() {
             val linear = (elapsedMillis / animationDurationMillis.coerceAtLeast(1f)).coerceIn(0f, 1f)
             animationLinearProgress = linear
             val drawStartedAt = System.nanoTime()
-            drawFrame(animationFromPose, animationToPose, linear)
+            drawFrame(animationFromPose, animationToPose, linear, frameTimeNanos)
             val drawNanos = System.nanoTime() - drawStartedAt
             animationFrameCount += 1
             animationDrawNanos += drawNanos
