@@ -63,24 +63,8 @@ class GitHubUpdateManager(private val activity: Activity) : AutoCloseable {
             throw IllegalStateException("The GitHub release channel is private.")
         }
         if (status !in 200..299) throw IllegalStateException("GitHub returned HTTP $status")
-        val releases = connection.inputStream.bufferedReader().use { JSONArray(it.readText()) }
-        for (releaseIndex in 0 until releases.length()) {
-            val release = releases.getJSONObject(releaseIndex)
-            if (release.optBoolean("draft")) continue
-            val buildNumber = release.optString("tag_name").removePrefix("build-").toIntOrNull() ?: continue
-            val assets = release.optJSONArray("assets") ?: continue
-            for (assetIndex in 0 until assets.length()) {
-                val asset = assets.getJSONObject(assetIndex)
-                if (asset.optString("name") != RELEASE_ASSET_NAME) continue
-                return GitHubRelease(
-                    buildNumber = buildNumber,
-                    title = release.optString("name").ifBlank { "Tendroid build $buildNumber" },
-                    downloadUrl = asset.getString("browser_download_url"),
-                    sha256 = parseSha256Digest(asset.optString("digest")),
-                )
-            }
-        }
-        throw IllegalStateException("No Tendroid APK was found in GitHub Releases.")
+        val content = connection.inputStream.bufferedReader().use { it.readText() }
+        return parseLatestGitHubRelease(content)
     }
 
     private fun download(release: GitHubRelease) {
@@ -149,6 +133,8 @@ class GitHubUpdateManager(private val activity: Activity) : AutoCloseable {
             connectTimeout = 10_000
             readTimeout = 20_000
             instanceFollowRedirects = true
+            useCaches = false
+            setRequestProperty("Cache-Control", "no-cache")
             setRequestProperty("Accept", "application/vnd.github+json")
             setRequestProperty("User-Agent", "Tendroid/${BuildConfig.VERSION_NAME}")
             setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
@@ -157,7 +143,6 @@ class GitHubUpdateManager(private val activity: Activity) : AutoCloseable {
     private companion object {
         const val RELEASES_API = "https://api.github.com/repos/DrArzter/tendroid/releases?per_page=10"
         const val RELEASE_DOWNLOAD_PREFIX = "https://github.com/DrArzter/tendroid/releases/download/"
-        const val RELEASE_ASSET_NAME = "tendroid-debug.apk"
         const val MAX_APK_BYTES = 150L * 1024 * 1024
     }
 }
@@ -168,6 +153,30 @@ data class GitHubRelease(
     val downloadUrl: String,
     val sha256: String,
 )
+
+internal fun parseLatestGitHubRelease(content: String): GitHubRelease {
+    val releases = JSONArray(content)
+    var latest: GitHubRelease? = null
+    for (releaseIndex in 0 until releases.length()) {
+        val release = releases.getJSONObject(releaseIndex)
+        if (release.optBoolean("draft")) continue
+        val buildNumber = release.optString("tag_name").removePrefix("build-").toIntOrNull() ?: continue
+        val assets = release.optJSONArray("assets") ?: continue
+        for (assetIndex in 0 until assets.length()) {
+            val asset = assets.getJSONObject(assetIndex)
+            if (asset.optString("name") != RELEASE_ASSET_NAME) continue
+            val candidate = GitHubRelease(
+                buildNumber = buildNumber,
+                title = release.optString("name").ifBlank { "Tendroid build $buildNumber" },
+                downloadUrl = asset.getString("browser_download_url"),
+                sha256 = parseSha256Digest(asset.optString("digest")),
+            )
+            if (latest == null || candidate.buildNumber > latest.buildNumber) latest = candidate
+            break
+        }
+    }
+    return latest ?: throw IllegalStateException("No Tendroid APK was found in GitHub Releases.")
+}
 
 internal fun parseSha256Digest(value: String): String {
     val digest = value.removePrefix("sha256:")
@@ -180,6 +189,7 @@ internal fun parseSha256Digest(value: String): String {
 private fun Char.isHexDigit(): Boolean = this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'
 
 private const val SHA256_HEX_LENGTH = 64
+private const val RELEASE_ASSET_NAME = "tendroid-debug.apk"
 
 sealed interface UpdateCheckResult {
     data object Current : UpdateCheckResult
