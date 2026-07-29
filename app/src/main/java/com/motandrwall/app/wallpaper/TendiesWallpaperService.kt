@@ -6,9 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RectF
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -26,6 +28,7 @@ import com.motandrwall.app.tendies.scene.TendiesSceneLoader
 import com.motandrwall.app.tendies.scene.TendiesSceneRenderer
 import com.motandrwall.app.tendies.scene.ScenePose
 import com.motandrwall.app.tendies.scene.SceneTransition
+import java.io.File
 import java.util.concurrent.Executors
 import kotlin.math.roundToLong
 
@@ -34,6 +37,7 @@ class TendiesWallpaperService : WallpaperService() {
     private val serviceHandler = Handler(Looper.getMainLooper())
     private val engines = linkedSetOf<TendiesEngine>()
     private val selectionStore by lazy { TendiesSelectionStore(this) }
+    private val frameCache by lazy { WallpaperFrameCache(this) }
     private val selectionListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == TendiesSelectionStore.KEY_FILE_NAME) {
             loadSelectedScene()
@@ -41,10 +45,15 @@ class TendiesWallpaperService : WallpaperService() {
     }
     @Volatile private var serviceDestroyed = false
     private var sharedScene: TendiesScene? = null
+    private var sharedSceneFile: File? = null
+    private var fallbackFrame: Bitmap? = null
+    private var fallbackFrameFileName: String? = null
+    private var frameCacheWritePendingFor: String? = null
 
     override fun onCreate() {
         super.onCreate()
         selectionStore.registerListener(selectionListener)
+        loadFallbackFrame(selectionStore.selectedFile())
         loadSelectedScene()
     }
 
@@ -56,6 +65,8 @@ class TendiesWallpaperService : WallpaperService() {
         loader.shutdownNow()
         sharedScene?.close()
         sharedScene = null
+        fallbackFrame?.recycle()
+        fallbackFrame = null
         super.onDestroy()
     }
 
@@ -78,8 +89,39 @@ class TendiesWallpaperService : WallpaperService() {
                 }
                 val previous = sharedScene
                 sharedScene = loaded
+                sharedSceneFile = selected
                 engines.toList().forEach { it.onSceneAvailable(loaded) }
                 previous?.close()
+            }
+        }
+    }
+
+    private fun loadFallbackFrame(selected: File?) {
+        val next = selected?.let(frameCache::read)
+        val previous = fallbackFrame
+        fallbackFrame = next
+        fallbackFrameFileName = selected?.name?.takeIf { next != null }
+        previous?.takeUnless { it === next }?.recycle()
+    }
+
+    private fun ensureSleepFrameCached(scene: TendiesScene, width: Int, height: Int) {
+        val selected = sharedSceneFile ?: return
+        if (width <= 0 || height <= 0 || frameCache.contains(selected)) return
+        if (frameCacheWritePendingFor == selected.name) return
+
+        frameCacheWritePendingFor = selected.name
+        val snapshot = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        TendiesSceneRenderer().render(Canvas(snapshot), scene, "Sleep")
+        loader.execute {
+            val result = runCatching { frameCache.write(selected, snapshot) }
+            snapshot.recycle()
+            result.onFailure { Log.w(LOG_TAG, "Could not cache Sleep frame", it) }
+            serviceHandler.post {
+                if (frameCacheWritePendingFor == selected.name) frameCacheWritePendingFor = null
+                if (!serviceDestroyed && selectionStore.selectedFile()?.name == selected.name) {
+                    loadFallbackFrame(selected)
+                    Log.i(LOG_TAG, "sleep-frame-cached width=$width height=$height")
+                }
             }
         }
     }
@@ -237,6 +279,8 @@ class TendiesWallpaperService : WallpaperService() {
             if (destroyed) return
             val state = currentSystemState()
             showStateImmediately(state)
+            val frame = surfaceHolder.surfaceFrame
+            ensureSleepFrameCached(loaded, frame.width(), frame.height())
             logState("scene-loaded states=${loaded.documents.flatMap { it.states.keys }.distinct()}")
         }
 
@@ -371,6 +415,13 @@ class TendiesWallpaperService : WallpaperService() {
             toPose: ScenePose? = displayedPose,
             progress: Float = 1f,
         ) {
+            val selected = selectionStore.selectedFile()
+            if (sharedScene == null && selected != null && fallbackFrame == null) {
+                // Do not post an empty black buffer while a selected package is
+                // loading. On engine recreation this lets SurfaceFlinger retain
+                // WallpaperManager's previous snapshot until real pixels exist.
+                return
+            }
             var canvas: Canvas? = null
             try {
                 canvas = lockRenderCanvas() ?: return
@@ -380,7 +431,7 @@ class TendiesWallpaperService : WallpaperService() {
                     val end = toPose ?: start
                     renderer.render(canvas, loaded, start, end, animationTransition, progress)
                 } else {
-                    drawPlaceholder(canvas)
+                    drawPlaceholder(canvas, selected)
                 }
             } finally {
                 canvas?.let(surfaceHolder::unlockCanvasAndPost)
@@ -497,7 +548,11 @@ class TendiesWallpaperService : WallpaperService() {
         }
 
         private fun currentSystemState(): String {
-            return if (keyguardGoingAway || !isKeyguardLocked()) "Unlock" else "Locked"
+            return when {
+                !isDeviceInteractive() -> "Sleep"
+                keyguardGoingAway || !isKeyguardLocked() -> "Unlock"
+                else -> "Locked"
+            }
         }
 
         private fun isKeyguardLocked(): Boolean {
@@ -529,8 +584,27 @@ class TendiesWallpaperService : WallpaperService() {
             return androidAod || samsungAod
         }
 
-        private fun drawPlaceholder(canvas: Canvas) {
+        private fun drawPlaceholder(canvas: Canvas, selected: File?) {
             canvas.drawColor(Color.rgb(14, 17, 22))
+            if (selected != null) {
+                val cached = fallbackFrame
+                    ?.takeIf { fallbackFrameFileName == selected.name && !it.isRecycled }
+                    ?: return
+                val scale = maxOf(
+                    canvas.width.toFloat() / cached.width,
+                    canvas.height.toFloat() / cached.height,
+                )
+                val width = cached.width * scale
+                val height = cached.height * scale
+                val destination = RectF(
+                    (canvas.width - width) / 2f,
+                    (canvas.height - height) / 2f,
+                    (canvas.width + width) / 2f,
+                    (canvas.height + height) / 2f,
+                )
+                canvas.drawBitmap(cached, null, destination, paint)
+                return
+            }
             paint.color = Color.rgb(116, 224, 193)
             paint.textSize = 44f
             paint.textAlign = Paint.Align.CENTER
