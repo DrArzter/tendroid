@@ -93,6 +93,8 @@ class GalleryRepository(private val context: Context) {
             connectTimeout = 10_000
             readTimeout = 25_000
             instanceFollowRedirects = false
+            useCaches = false
+            setRequestProperty("Cache-Control", "no-cache")
             setRequestProperty("User-Agent", "Tendroid/${BuildConfig.VERSION_NAME}")
         }
 
