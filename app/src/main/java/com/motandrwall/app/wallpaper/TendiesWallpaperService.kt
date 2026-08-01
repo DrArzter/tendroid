@@ -6,11 +6,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -20,6 +22,7 @@ import android.provider.Settings
 import android.service.wallpaper.WallpaperService
 import android.util.Log
 import android.view.Choreographer
+import android.view.Display
 import android.view.Surface
 import android.view.SurfaceHolder
 import com.motandrwall.app.tendies.TendiesSelectionStore
@@ -170,7 +173,16 @@ class TendiesWallpaperService : WallpaperService() {
         private var animationRunning = false
         private var canvasBackendLogged = false
         private var keyguardGoingAway = false
-        private var prepareSleepWhenHidden = false
+        private var screenOffInProgress = false
+        private var screenOffEnteredAod = false
+        private val aodStateObserver = object : ContentObserver(mainHandler) {
+            override fun onChange(selfChange: Boolean) {
+                if (isSamsungAodShowing()) {
+                    screenOffEnteredAod = true
+                    logState("aod-visible")
+                }
+            }
+        }
         private val keyguardCheck = object : Runnable {
             override fun run() {
                 if (destroyed || !engineVisible || !isDeviceInteractive()) return
@@ -205,6 +217,7 @@ class TendiesWallpaperService : WallpaperService() {
 
         override fun onCreate(surfaceHolder: SurfaceHolder) {
             super.onCreate(surfaceHolder)
+            screenOffEnteredAod = isAodActuallyVisible()
             displayedState = currentSystemState()
             animationFrom = displayedState
             animationTo = displayedState
@@ -219,18 +232,38 @@ class TendiesWallpaperService : WallpaperService() {
                 @Suppress("DEPRECATION")
                 registerReceiver(screenReceiver, filter)
             }
+            contentResolver.registerContentObserver(
+                Settings.System.getUriFor(SAMSUNG_AOD_SHOW_STATE_SETTING),
+                false,
+                aodStateObserver,
+            )
             logState("engine-created")
             sharedScene?.let(::onSceneAvailable)
         }
 
         override fun onVisibilityChanged(visible: Boolean) {
             engineVisible = visible
+            if (visible && !isDeviceInteractive() && isAodActuallyVisible()) {
+                screenOffEnteredAod = true
+            }
             logState("visibility=$visible")
             if (!visible) {
                 cancelAnimationCallbacks()
-                if (prepareSleepWhenHidden || animationTo == "Sleep") {
-                    prepareSleepWhenHidden = false
-                    prepareState("Sleep")
+                if ((screenOffInProgress || !isDeviceInteractive()) && isAodFeatureEnabled()) {
+                    // Samsung's tap-to-show AOD reuses the wallpaper snapshot
+                    // prepared while the normal lock surface is already hidden.
+                    // Keep the visible power-off transition aimed at Locked, but
+                    // post Sleep only after SystemUI has covered the surface.
+                    prepareState(WallpaperStatePolicy.SLEEP)
+                    if (surfaceHolder.surface.isValid) {
+                        drawFrame()
+                        logState("hidden-aod-frame-posted")
+                    }
+                } else if (
+                    animationTo == WallpaperStatePolicy.SLEEP ||
+                    animationTo == WallpaperStatePolicy.LOCKED
+                ) {
+                    prepareState(animationTo)
                 }
                 return
             }
@@ -287,6 +320,7 @@ class TendiesWallpaperService : WallpaperService() {
                 COMMAND_WAKING_UP -> handleWakingUp()
                 COMMAND_GOING_TO_SLEEP -> handleGoingToSleep()
                 COMMAND_KEYGUARD_GOING_AWAY -> handleKeyguardGoingAway()
+                COMMAND_SAMSUNG_AOD_TRANSITION_END -> handleAodBecameVisible()
             }
             return super.onCommand(action, x, y, z, extras, resultRequested)
         }
@@ -297,6 +331,7 @@ class TendiesWallpaperService : WallpaperService() {
             mainHandler.removeCallbacks(keyguardCheck)
             gpuRenderer.release()
             runCatching { unregisterReceiver(screenReceiver) }
+            runCatching { contentResolver.unregisterContentObserver(aodStateObserver) }
             engines.remove(this)
             super.onDestroy()
         }
@@ -330,7 +365,7 @@ class TendiesWallpaperService : WallpaperService() {
             animationStartedAtNanos = 0L
             animationTransition = loaded?.transition(animationFrom, animationTo)
             animationDurationMillis = animationTransition?.durationMillis ?: DEFAULT_TRANSITION_MILLIS
-            animationUsesTimer = targetState == "Sleep" && !isDeviceInteractive()
+            animationUsesTimer = !isDeviceInteractive()
             animationFrameCount = 0
             animationDrawNanos = 0L
             animationMaxDrawNanos = 0L
@@ -343,7 +378,7 @@ class TendiesWallpaperService : WallpaperService() {
         private fun scheduleAnimation() {
             cancelAnimationCallbacks()
             animationStartedAtNanos = 0L
-            animationUsesTimer = animationTo == "Sleep" && !isDeviceInteractive()
+            animationUsesTimer = !isDeviceInteractive()
             animationFrameCount = 0
             animationDrawNanos = 0L
             animationMaxDrawNanos = 0L
@@ -374,38 +409,65 @@ class TendiesWallpaperService : WallpaperService() {
         private fun handleGoingToSleep() {
             keyguardGoingAway = false
             mainHandler.removeCallbacks(keyguardCheck)
-            if (prepareSleepWhenHidden || (!engineVisible && displayedState == "Sleep")) return
-            if (isAlwaysOnDisplayEnabled()) {
-                prepareSleepWhenHidden = false
-                transitionTo("Sleep")
+            if (!screenOffInProgress) {
+                screenOffInProgress = true
+                screenOffEnteredAod = isAodActuallyVisible()
+            }
+            val target = WallpaperStatePolicy.screenOffState(shouldEnterAodOnScreenOff())
+            if (!engineVisible && displayedState == target) return
+            if (target == WallpaperStatePolicy.SLEEP) {
+                transitionTo(WallpaperStatePolicy.SLEEP)
             } else {
-                // Without AOD the wallpaper surface is about to disappear under
-                // SystemUI's screen-off fade. Moving toward Sleep here exposes a
-                // few incomplete CAML frames as a visible jump. Keep the current
-                // frame stable and prepare Sleep only after the surface is hidden.
-                prepareSleepWhenHidden = true
-                freezeCurrentFrame()
-                logState("defer-sleep-until-hidden")
+                // With AOD disabled, power-off is a lock operation rather than a
+                // doze operation. Animate toward Locked while SystemUI fades the
+                // surface, then retain the completed Locked pose while hidden.
+                transitionTo(WallpaperStatePolicy.LOCKED)
             }
         }
 
         private fun handleWakingUp() {
             keyguardGoingAway = false
-            if (prepareSleepWhenHidden) {
-                prepareSleepWhenHidden = false
-                prepareState("Sleep")
+            if (
+                !screenOffInProgress &&
+                animationRunning &&
+                animationTo == WallpaperStatePolicy.LOCKED
+            ) {
+                // SCREEN_ON and the wallpaper waking command describe the same
+                // wake cycle. Do not let the second signal turn a real
+                // AOD -> Locked transition into an immediate Locked frame.
+                startKeyguardChecks()
+                return
             }
+            val wokeFromAod = screenOffEnteredAod || isAodActuallyVisible()
+            screenOffInProgress = false
+            screenOffEnteredAod = false
             requestAnimationFrameRate(surfaceHolder)
             val state = currentSystemState()
-            if (state != animationTo) transitionTo(state)
+            if (
+                state == WallpaperStatePolicy.LOCKED &&
+                !WallpaperStatePolicy.shouldAnimateWakeToLocked(wokeFromAod)
+            ) {
+                showStateImmediately(WallpaperStatePolicy.LOCKED)
+            } else if (state != animationTo) {
+                transitionTo(state)
+            }
             startKeyguardChecks()
         }
 
         private fun handleUnlocked() {
             keyguardGoingAway = false
+            screenOffInProgress = false
+            screenOffEnteredAod = false
             mainHandler.removeCallbacks(keyguardCheck)
             requestAnimationFrameRate(surfaceHolder)
             transitionTo("Unlock")
+        }
+
+        private fun handleAodBecameVisible() {
+            screenOffEnteredAod = true
+            if (!isDeviceInteractive() && animationTo != WallpaperStatePolicy.SLEEP) {
+                transitionTo(WallpaperStatePolicy.SLEEP)
+            }
         }
 
         private fun handleKeyguardGoingAway() {
@@ -421,19 +483,6 @@ class TendiesWallpaperService : WallpaperService() {
         private fun startKeyguardChecks() {
             mainHandler.removeCallbacks(keyguardCheck)
             mainHandler.post(keyguardCheck)
-        }
-
-        private fun freezeCurrentFrame() {
-            if (animationRunning) {
-                sharedScene?.let { displayedPose = captureCurrentPose(it) }
-            }
-            cancelAnimationCallbacks()
-            animationFrom = displayedState
-            animationTo = displayedState
-            animationFromPose = displayedPose
-            animationToPose = displayedPose
-            animationTransition = null
-            animationRunning = false
         }
 
         private fun drawFrame(
@@ -497,6 +546,7 @@ class TendiesWallpaperService : WallpaperService() {
 
         private fun renderAnimationFrame(frameTimeNanos: Long) {
             if (destroyed || !engineVisible) return
+            if (!isDeviceInteractive() && isAodActuallyVisible()) screenOffEnteredAod = true
             if (animationStartedAtNanos == 0L) {
                 animationStartedAtNanos = frameTimeNanos -
                     (animationLinearProgress * animationDurationMillis * 1_000_000L).toLong()
@@ -605,11 +655,12 @@ class TendiesWallpaperService : WallpaperService() {
         }
 
         private fun currentSystemState(): String {
-            return when {
-                !isDeviceInteractive() -> "Sleep"
-                keyguardGoingAway || !isKeyguardLocked() -> "Unlock"
-                else -> "Locked"
-            }
+            return WallpaperStatePolicy.currentState(
+                interactive = isDeviceInteractive(),
+                keyguardLocked = isKeyguardLocked(),
+                keyguardGoingAway = keyguardGoingAway,
+                useSleepWhileScreenOff = shouldEnterAodOnScreenOff() || isAodActuallyVisible(),
+            )
         }
 
         private fun isKeyguardLocked(): Boolean {
@@ -627,7 +678,26 @@ class TendiesWallpaperService : WallpaperService() {
             return power.isPowerSaveMode
         }
 
-        private fun isAlwaysOnDisplayEnabled(): Boolean {
+        private fun shouldEnterAodOnScreenOff(): Boolean {
+            val androidAod = Settings.Secure.getInt(
+                contentResolver,
+                DOZE_ALWAYS_ON_SETTING,
+                SETTING_DISABLED,
+            ) != SETTING_DISABLED
+            val samsungAod = Settings.System.getInt(
+                contentResolver,
+                SAMSUNG_AOD_MODE_SETTING,
+                SETTING_DISABLED,
+            ) != SETTING_DISABLED
+            val samsungTapToShow = Settings.System.getInt(
+                contentResolver,
+                SAMSUNG_AOD_TAP_TO_SHOW_SETTING,
+                SETTING_DISABLED,
+            ) != SETTING_DISABLED
+            return androidAod || (samsungAod && !samsungTapToShow)
+        }
+
+        private fun isAodFeatureEnabled(): Boolean {
             val androidAod = Settings.Secure.getInt(
                 contentResolver,
                 DOZE_ALWAYS_ON_SETTING,
@@ -639,6 +709,32 @@ class TendiesWallpaperService : WallpaperService() {
                 SETTING_DISABLED,
             ) != SETTING_DISABLED
             return androidAod || samsungAod
+        }
+
+        private fun isDisplayDozing(): Boolean {
+            val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+            return when (displayManager.getDisplay(Display.DEFAULT_DISPLAY)?.state) {
+                Display.STATE_DOZE, Display.STATE_DOZE_SUSPEND -> true
+                else -> false
+            }
+        }
+
+        private fun isAodActuallyVisible(): Boolean {
+            if (!isDisplayDozing()) return false
+            val androidAlwaysOn = Settings.Secure.getInt(
+                contentResolver,
+                DOZE_ALWAYS_ON_SETTING,
+                SETTING_DISABLED,
+            ) != SETTING_DISABLED
+            return isSamsungAodShowing() || androidAlwaysOn
+        }
+
+        private fun isSamsungAodShowing(): Boolean {
+            return Settings.System.getInt(
+                contentResolver,
+                SAMSUNG_AOD_SHOW_STATE_SETTING,
+                SETTING_DISABLED,
+            ) != SETTING_DISABLED
         }
 
         private fun drawPlaceholder(canvas: Canvas, selected: File?) {
@@ -687,6 +783,7 @@ class TendiesWallpaperService : WallpaperService() {
         const val COMMAND_WAKING_UP = "android.wallpaper.wakingup"
         const val COMMAND_GOING_TO_SLEEP = "android.wallpaper.goingtosleep"
         const val COMMAND_KEYGUARD_GOING_AWAY = "android.wallpaper.keyguardgoingaway"
+        const val COMMAND_SAMSUNG_AOD_TRANSITION_END = "samsung.android.wallpaper.aodtransitionend"
         const val DEFAULT_FRAME_RATE = 60f
         const val DEFAULT_FRAME_DELAY_MILLIS = 16L
         const val MIN_FRAME_DELAY_MILLIS = 8L
@@ -694,6 +791,8 @@ class TendiesWallpaperService : WallpaperService() {
         const val SAMSUNG_REFRESH_RATE_MODE_SETTING = "refresh_rate_mode"
         const val DOZE_ALWAYS_ON_SETTING = "doze_always_on"
         const val SAMSUNG_AOD_MODE_SETTING = "aod_mode"
+        const val SAMSUNG_AOD_TAP_TO_SHOW_SETTING = "aod_tap_to_show_mode"
+        const val SAMSUNG_AOD_SHOW_STATE_SETTING = "aod_show_state"
         const val SETTING_DISABLED = 0
         const val UNKNOWN_REFRESH_MODE = -1
         const val STANDARD_REFRESH_MODE = 0
