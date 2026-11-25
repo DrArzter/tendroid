@@ -1,6 +1,7 @@
 package com.motandrwall.app.wallpaper
 
 import android.app.KeyguardManager
+import android.app.WallpaperColors
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -33,6 +34,7 @@ import com.motandrwall.app.tendies.scene.ScenePose
 import com.motandrwall.app.tendies.scene.SceneTransition
 import java.io.File
 import java.util.concurrent.Executors
+import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
 class TendiesWallpaperService : WallpaperService() {
@@ -171,6 +173,9 @@ class TendiesWallpaperService : WallpaperService() {
         private var animationToPose: ScenePose? = null
         private var animationTransition: SceneTransition? = null
         private var animationRunning = false
+        private var frameScheduled = false
+        private var sceneEpochNanos = 0L
+        private val colorsByState = mutableMapOf<String, WallpaperColors?>()
         private var canvasBackendLogged = false
         private var keyguardGoingAway = false
         private var screenOffInProgress = false
@@ -276,6 +281,7 @@ class TendiesWallpaperService : WallpaperService() {
             } else {
                 transitionTo(state)
             }
+            ensureFrameLoop()
             if (state == "Locked") startKeyguardChecks()
         }
 
@@ -283,6 +289,7 @@ class TendiesWallpaperService : WallpaperService() {
             super.onSurfaceChanged(holder, format, width, height)
             requestAnimationFrameRate(holder)
             drawFrame()
+            ensureFrameLoop()
         }
 
         override fun onSurfaceCreated(holder: SurfaceHolder) {
@@ -338,11 +345,53 @@ class TendiesWallpaperService : WallpaperService() {
 
         fun onSceneAvailable(loaded: TendiesScene) {
             if (destroyed) return
+            sceneEpochNanos = 0L
+            colorsByState.clear()
             val state = currentSystemState()
             showStateImmediately(state)
+            notifyWallpaperColors()
             val frame = surfaceHolder.surfaceFrame
             ensureSleepFrameCached(loaded, frame.width(), frame.height())
-            logState("scene-loaded states=${loaded.documents.flatMap { it.states.keys }.distinct()}")
+            logState(
+                "scene-loaded states=${loaded.documents.flatMap { it.states.keys }.distinct()} " +
+                    "animated=${loaded.hasAnimations}",
+            )
+        }
+
+        /**
+         * SystemUI tints the status and navigation bars from the wallpaper's
+         * colours. Without an answer here One UI falls back to an opaque light
+         * navigation bar, which reads as a white strip under a dark scene.
+         */
+        @Suppress("NewApi") // Only invoked by the framework on API 27+.
+        override fun onComputeColors(): WallpaperColors? {
+            val scene = sharedScene ?: return null
+            return colorsByState.getOrPut(displayedState) { computeColors(scene, displayedState) }
+        }
+
+        private fun notifyWallpaperColors() {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O_MR1) return
+            runCatching { notifyColorsChanged() }
+                .onFailure { Log.w(LOG_TAG, "Could not publish wallpaper colours", it) }
+        }
+
+        @Suppress("NewApi") // Reached only through onComputeColors.
+        private fun computeColors(scene: TendiesScene, state: String): WallpaperColors? {
+            val root = scene.documents.firstOrNull()?.root ?: return null
+            if (root.width <= 0f || root.height <= 0f) return null
+            val height = (COLOR_SAMPLE_WIDTH * root.height / root.width).roundToInt().coerceAtLeast(1)
+            val sample = Bitmap.createBitmap(COLOR_SAMPLE_WIDTH, height, Bitmap.Config.ARGB_8888)
+            return try {
+                TendiesSceneRenderer().render(Canvas(sample), scene, state)
+                WallpaperColors.fromBitmap(sample).also {
+                    Log.i(LOG_TAG, "wallpaper-colors state=$state hints=${it.colorHints} primary=${it.primaryColor}")
+                }
+            } catch (error: Exception) {
+                Log.w(LOG_TAG, "Could not sample wallpaper colours", error)
+                null
+            } finally {
+                sample.recycle()
+            }
         }
 
         private fun transitionTo(targetState: String) {
@@ -355,7 +404,10 @@ class TendiesWallpaperService : WallpaperService() {
             if (targetState == displayedState && !wasAnimating) {
                 animationFrom = targetState
                 animationTo = targetState
-                if (engineVisible) drawFrame()
+                if (engineVisible) {
+                    drawFrame()
+                    ensureFrameLoop()
+                }
                 return
             }
             animationFrom = transitionSourceState
@@ -388,6 +440,7 @@ class TendiesWallpaperService : WallpaperService() {
 
         private fun prepareState(state: String) {
             cancelAnimationCallbacks()
+            val changed = displayedState != state
             displayedState = state
             animationFrom = state
             animationTo = state
@@ -398,12 +451,16 @@ class TendiesWallpaperService : WallpaperService() {
             animationToPose = displayedPose
             animationTransition = null
             animationRunning = false
+            if (changed) notifyWallpaperColors()
         }
 
         private fun showStateImmediately(state: String) {
             prepareState(state)
             logState("show=$state")
-            if (engineVisible) drawFrame()
+            if (engineVisible) {
+                drawFrame()
+                ensureFrameLoop()
+            }
         }
 
         private fun handleGoingToSleep() {
@@ -500,19 +557,32 @@ class TendiesWallpaperService : WallpaperService() {
             }
             val loaded = sharedScene
             val frame = surfaceHolder.surfaceFrame
-            if (loaded != null) {
-                val start = fromPose ?: loaded.pose(displayedState)
+            // Layer animations are resolved here rather than inside the
+            // renderers: folding them into one posed scene keeps both the GL and
+            // the Canvas path on the same from/to interpolation.
+            val posed = loaded?.let { scene ->
+                val start = fromPose ?: scene.pose(displayedState)
                 val end = toPose ?: start
+                // A settled scene poses both ends identically, so skip rebuilding
+                // the interpolation on every looping frame.
+                val base = if (start === end) start
+                else scene.interpolatePose(start, end, animationTransition, progress)
+                val animated = scene.takeIf { it.hasAnimations }
+                    ?.animate(base, sceneElapsedMillis(frameTimeNanos))
+                if (animated != null) PosedFrame(animated, animated, null, 1f)
+                else PosedFrame(start, end, animationTransition, progress)
+            }
+            if (loaded != null && posed != null) {
                 if (
                     gpuRenderer.render(
                         surface = surfaceHolder.surface,
                         width = frame.width(),
                         height = frame.height(),
                         scene = loaded,
-                        fromPose = start,
-                        toPose = end,
-                        transition = animationTransition,
-                        progress = progress,
+                        fromPose = posed.from,
+                        toPose = posed.to,
+                        transition = posed.transition,
+                        progress = posed.progress,
                         frameTimeNanos = frameTimeNanos,
                     )
                 ) return
@@ -532,10 +602,8 @@ class TendiesWallpaperService : WallpaperService() {
             var canvas: Canvas? = null
             try {
                 canvas = lockRenderCanvas() ?: return
-                if (loaded != null) {
-                    val start = fromPose ?: loaded.pose(displayedState)
-                    val end = toPose ?: start
-                    renderer.render(canvas, loaded, start, end, animationTransition, progress)
+                if (loaded != null && posed != null) {
+                    renderer.render(canvas, loaded, posed.from, posed.to, posed.transition, posed.progress)
                 } else {
                     drawPlaceholder(canvas, selected)
                 }
@@ -545,8 +613,16 @@ class TendiesWallpaperService : WallpaperService() {
         }
 
         private fun renderAnimationFrame(frameTimeNanos: Long) {
+            frameScheduled = false
             if (destroyed || !engineVisible) return
             if (!isDeviceInteractive() && isAodActuallyVisible()) screenOffEnteredAod = true
+            if (!animationRunning) {
+                // No state transition in flight; this frame exists only to
+                // advance the scene's own looping animations.
+                drawFrame(frameTimeNanos = frameTimeNanos)
+                if (shouldKeepDrawing(frameTimeNanos)) postAnimationFrame()
+                return
+            }
             if (animationStartedAtNanos == 0L) {
                 animationStartedAtNanos = frameTimeNanos -
                     (animationLinearProgress * animationDurationMillis * 1_000_000L).toLong()
@@ -563,9 +639,11 @@ class TendiesWallpaperService : WallpaperService() {
             if (linear < 1f) {
                 postAnimationFrame()
             } else {
+                val stateChanged = displayedState != animationTo
                 displayedState = animationTo
                 displayedPose = animationToPose
                 animationRunning = false
+                if (stateChanged) notifyWallpaperColors()
                 val averageMillis = animationDrawNanos / animationFrameCount.coerceAtLeast(1) / 1_000_000f
                 val maxMillis = animationMaxDrawNanos / 1_000_000f
                 Log.i(LOG_TAG, "transition-complete frames=$animationFrameCount avgMs=$averageMillis maxMs=$maxMillis")
@@ -576,6 +654,7 @@ class TendiesWallpaperService : WallpaperService() {
                         startKeyguardChecks()
                     }
                 }
+                ensureFrameLoop()
             }
         }
 
@@ -586,6 +665,8 @@ class TendiesWallpaperService : WallpaperService() {
         }
 
         private fun postAnimationFrame() {
+            if (frameScheduled) return
+            frameScheduled = true
             if (animationUsesTimer) {
                 mainHandler.postDelayed(animationTimerFrame, animationTickDelayMillis)
             } else {
@@ -594,8 +675,33 @@ class TendiesWallpaperService : WallpaperService() {
         }
 
         private fun cancelAnimationCallbacks() {
+            frameScheduled = false
             choreographer.removeFrameCallback(animationFrame)
             mainHandler.removeCallbacks(animationTimerFrame)
+        }
+
+        /**
+         * Looping layer animations run off wall-clock time, so the engine has to
+         * keep drawing even when no state transition is in flight. Stop once the
+         * last animation has settled, or while the screen is off, so a static
+         * scene still costs nothing.
+         */
+        private fun ensureFrameLoop() {
+            if (destroyed || !engineVisible || animationRunning || frameScheduled) return
+            if (!shouldKeepDrawing(System.nanoTime())) return
+            animationUsesTimer = !isDeviceInteractive()
+            postAnimationFrame()
+        }
+
+        private fun shouldKeepDrawing(frameTimeNanos: Long): Boolean {
+            if (destroyed || !engineVisible || !isDeviceInteractive()) return false
+            val loaded = sharedScene ?: return false
+            return sceneElapsedMillis(frameTimeNanos) < loaded.animationEndMillis
+        }
+
+        private fun sceneElapsedMillis(frameTimeNanos: Long): Float {
+            if (sceneEpochNanos == 0L) sceneEpochNanos = frameTimeNanos
+            return (frameTimeNanos - sceneEpochNanos) / 1_000_000f
         }
 
         private fun requestAnimationFrameRate(holder: SurfaceHolder) {
@@ -774,7 +880,16 @@ class TendiesWallpaperService : WallpaperService() {
 
     }
 
+    /** One frame's resolved poses, after folding in any looping layer animations. */
+    private class PosedFrame(
+        val from: ScenePose,
+        val to: ScenePose,
+        val transition: SceneTransition?,
+        val progress: Float,
+    )
+
     private companion object {
+        const val COLOR_SAMPLE_WIDTH = 128
         const val MIN_TEXTURE_EDGE = 1024
         const val MAX_TEXTURE_EDGE = 2560
         const val DEFAULT_TRANSITION_MILLIS = 800f
