@@ -246,50 +246,29 @@ internal class TendiesGlRenderer {
         parentCoordinatesYUp: Boolean,
         parentTransform: AffineTransform2D,
     ) {
-        val from = fromPose.documents.getOrNull(documentIndex)?.get(layer.id)
-            ?: LayerPose(
-                layer.positionX,
-                layer.positionY,
-                layer.rotationRadians,
-                layer.opacity,
-                layer.width,
-                layer.height,
-            )
-        val to = toPose.documents.getOrNull(documentIndex)?.get(layer.id) ?: from
-        val positionX = lerp(from.positionX, to.positionX, progress("position.x"))
-        val rawPositionY = lerp(from.positionY, to.positionY, progress("position.y"))
-        val positionY = if (parentCoordinatesYUp) parentHeight - rawPositionY else rawPositionY
-        val rawRotation = lerp(
-            from.rotationRadians,
-            to.rotationRadians,
-            progress("transform.rotation.z"),
-        )
-        val rotation = if (parentCoordinatesYUp) -rawRotation else rawRotation
-        val opacity = lerp(from.opacity, to.opacity, progress("opacity"))
-        val alpha = (inheritedAlpha * opacity).coerceIn(0f, 1f)
+        val pose = layer.resolvePose(fromPose, toPose, documentIndex, progress)
+        val positionY = if (parentCoordinatesYUp) parentHeight - pose.positionY else pose.positionY
+        val rotation = if (parentCoordinatesYUp) -pose.rotationRadians else pose.rotationRadians
+        val alpha = (inheritedAlpha * pose.opacity).coerceIn(0f, 1f)
         if (alpha <= 0f) return
-        val width = lerp(from.width, to.width, progress("bounds.size.width"))
-        val height = lerp(from.height, to.height, progress("bounds.size.height"))
-        val scaleX = lerp(from.scaleX, to.scaleX, progress("transform.scale.x"))
-        val scaleY = lerp(from.scaleY, to.scaleY, progress("transform.scale.y"))
 
         val transform = parentTransform
-            .translated(positionX, positionY)
+            .translated(pose.positionX, positionY)
             .rotated(rotation)
-            .scaled(scaleX, scaleY)
+            .scaled(pose.scaleX, pose.scaleY)
             .translated(
-                -layer.anchorX * width - layer.boundsX,
-                -layer.anchorY * height - layer.boundsY,
+                -layer.anchorX * pose.width - layer.boundsX,
+                -layer.anchorY * pose.height - layer.boundsY,
             )
         val clipPushed = layer.masksToBounds
-        if (clipPushed) pushClip(transform, layer, width, height)
+        if (clipPushed) pushClip(transform, layer, pose.width, pose.height)
 
-        layer.backgroundColor?.let { drawSolid(transform, layer, width, height, it, alpha) }
+        layer.backgroundColor?.let { drawSolid(transform, layer, pose.width, pose.height, it, alpha) }
         layer.imagePath?.let(scene.bitmaps::get)?.let { bitmap ->
-            drawTextured(transform, layer, width, height, textureFor(bitmap), alpha)
+            drawTextured(transform, layer, pose.width, pose.height, textureFor(bitmap), alpha)
         }
         layer.text?.let {
-            drawTextured(transform, layer, width, height, textTextureFor(layer), alpha)
+            drawTextured(transform, layer, pose.width, pose.height, textTextureFor(layer), alpha)
         }
         layer.children.forEach { child ->
             renderLayer(
@@ -300,12 +279,12 @@ internal class TendiesGlRenderer {
                 documentIndex = documentIndex,
                 progress = progress,
                 inheritedAlpha = alpha,
-                parentHeight = height,
+                parentHeight = pose.height,
                 parentCoordinatesYUp = !layer.geometryFlipped,
                 parentTransform = transform,
             )
         }
-        if (clipPushed) popClip(transform, layer, width, height)
+        if (clipPushed) popClip(transform, layer, pose.width, pose.height)
     }
 
     private fun pushClip(transform: AffineTransform2D, layer: SceneLayer, width: Float, height: Float) {
@@ -516,9 +495,6 @@ internal class TendiesGlRenderer {
         val error = GLES20.glGetError()
         check(error == GLES20.GL_NO_ERROR) { "$operation failed with OpenGL error 0x${error.toString(16)}" }
     }
-
-    private fun lerp(start: Float, end: Float, progress: Float): Float =
-        start + (end - start) * progress
 
     private companion object {
         const val VERTEX_COUNT = 4

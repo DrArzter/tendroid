@@ -133,9 +133,6 @@ data class TendiesScene(
         })
     }
 
-    private fun lerp(start: Float, end: Float, progress: Float): Float =
-        start + (end - start) * progress
-
     fun transitionDurationMillis(fromState: String, toState: String): Float {
         return transition(fromState, toState)?.durationMillis ?: DEFAULT_TRANSITION_MILLIS
     }
@@ -192,9 +189,39 @@ data class LayerPose(
         scaleX = lerp(scaleX, to.scaleX, progress),
         scaleY = lerp(scaleY, to.scaleY, progress),
     )
+}
 
-    private fun lerp(start: Float, end: Float, progress: Float): Float =
-        start + (end - start) * progress
+internal fun lerp(start: Float, end: Float, progress: Float): Float =
+    start + (end - start) * progress
+
+/**
+ * Resolves one layer's pose for a frame. Both renderer backends need the same
+ * per-key-path interpolation, so it lives here instead of being mirrored in
+ * each of them.
+ */
+internal fun SceneLayer.resolvePose(
+    fromPose: ScenePose,
+    toPose: ScenePose,
+    documentIndex: Int,
+    progress: (String) -> Float,
+): LayerPose {
+    val from = fromPose.documents.getOrNull(documentIndex)?.get(id)
+        ?: LayerPose(positionX, positionY, rotationRadians, opacity, width, height)
+    val to = toPose.documents.getOrNull(documentIndex)?.get(id) ?: from
+    return LayerPose(
+        positionX = lerp(from.positionX, to.positionX, progress("position.x")),
+        positionY = lerp(from.positionY, to.positionY, progress("position.y")),
+        rotationRadians = lerp(
+            from.rotationRadians,
+            to.rotationRadians,
+            progress("transform.rotation.z"),
+        ),
+        opacity = lerp(from.opacity, to.opacity, progress("opacity")),
+        width = lerp(from.width, to.width, progress("bounds.size.width")),
+        height = lerp(from.height, to.height, progress("bounds.size.height")),
+        scaleX = lerp(from.scaleX, to.scaleX, progress("transform.scale.x")),
+        scaleY = lerp(from.scaleY, to.scaleY, progress("transform.scale.y")),
+    )
 }
 
 data class SceneDocument(

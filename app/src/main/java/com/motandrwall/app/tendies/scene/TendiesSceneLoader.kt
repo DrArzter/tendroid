@@ -37,6 +37,7 @@ class TendiesSceneLoader(
         private const val MAX_REPEAT_COUNT = 1_000_000f
         private const val MIN_ANIMATION_SPEED = 0.01f
         private const val MAX_ANIMATION_SPEED = 100f
+        private val WHITESPACE = Regex("\\s+")
     }
 
     fun load(packageFile: File): TendiesScene {
@@ -230,7 +231,7 @@ class TendiesSceneLoader(
 
     private fun parseAnimationValue(value: String): AnimationValue? {
         if (value.isBlank()) return null
-        val numbers = value.trim().split(Regex("\\s+")).mapNotNull(String::toFloatOrNull)
+        val numbers = value.trim().split(WHITESPACE).mapNotNull(String::toFloatOrNull)
         return when (numbers.size) {
             0 -> null
             1 -> AnimationValue(numbers[0])
@@ -378,7 +379,7 @@ class TendiesSceneLoader(
 
     private fun parseNumbers(value: String, defaults: List<Float>): List<Float> {
         if (value.isBlank()) return defaults
-        val parsed = value.trim().split(Regex("\\s+")).mapNotNull(String::toFloatOrNull)
+        val parsed = value.trim().split(WHITESPACE).mapNotNull(String::toFloatOrNull)
         return if (parsed.size >= defaults.size) parsed.take(defaults.size) else defaults
     }
 
@@ -398,7 +399,7 @@ class TendiesSceneLoader(
 
     private fun parseColor(value: String): Int? {
         if (value.isBlank()) return null
-        val values = value.trim().split(Regex("\\s+")).mapNotNull(String::toFloatOrNull)
+        val values = value.trim().split(WHITESPACE).mapNotNull(String::toFloatOrNull)
         if (values.size < 3) return null
         return Color.argb(
             ((values.getOrElse(3) { 1f }).coerceIn(0f, 1f) * 255).toInt(),
