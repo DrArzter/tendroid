@@ -32,6 +32,11 @@ class TendiesSceneLoader(
         private const val MAX_CAML_BYTES = 4 * 1024 * 1024
         private const val DEFAULT_MAX_TEXTURE_EDGE = 1024
         private const val DEFAULT_MAX_SCENE_BITMAP_BYTES = 192L * 1024 * 1024
+        private const val MAX_ANIMATIONS_PER_LAYER = 16
+        private const val MAX_ANIMATION_VALUES = 256
+        private const val MAX_REPEAT_COUNT = 1_000_000f
+        private const val MIN_ANIMATION_SPEED = 0.01f
+        private const val MAX_ANIMATION_SPEED = 100f
     }
 
     fun load(packageFile: File): TendiesScene {
@@ -159,8 +164,78 @@ class TendiesSceneLoader(
             fontName = fontName,
             fontSize = element.floatAttribute("fontSize", 17f),
             foregroundColor = parseColor(element.getAttribute("foregroundColor")) ?: Color.WHITE,
+            animations = parseLayerAnimations(element),
             children = sublayers,
         )
+    }
+
+    private fun parseLayerAnimations(element: Element): List<LayerAnimation> {
+        val container = element.directChild("animations") ?: return emptyList()
+        return container.childElements()
+            .filter { it.localTagName() == "animation" }
+            .take(MAX_ANIMATIONS_PER_LAYER)
+            .mapNotNull(::parseLayerAnimation)
+            .filter(LayerAnimation::isAnimated)
+    }
+
+    private fun parseLayerAnimation(element: Element): LayerAnimation? {
+        val values = element.directChild("values")
+            ?.childElements()
+            ?.take(MAX_ANIMATION_VALUES)
+            ?.mapNotNull(::parseAnimationValue)
+            ?: listOfNotNull(
+                // CABasicAnimation states its endpoints as attributes instead.
+                parseAnimationValue(element.getAttribute("fromValue")),
+                parseAnimationValue(element.getAttribute("toValue")),
+            )
+        if (values.size < 2) return null
+        val duration = element.getAttribute("duration").toFloatOrNull() ?: return null
+        val keyTimes = element.directChild("keyTimes")
+            ?.childElements()
+            ?.take(MAX_ANIMATION_VALUES)
+            ?.mapNotNull { it.getAttribute("value").toFloatOrNull() }
+            .orEmpty()
+        // `beginTime` is exported as a near-zero epsilon to start immediately.
+        val begin = element.floatAttribute("beginTime", 0f).coerceAtLeast(0f) * 1_000f
+        val timingFunction = element.getAttribute("timingFunction")
+        return LayerAnimation(
+            keyPath = element.getAttribute("keyPath"),
+            values = values,
+            keyTimes = keyTimes,
+            beginMillis = begin,
+            durationMillis = duration.coerceAtLeast(0f) * 1_000f,
+            speed = element.floatAttribute("speed", 1f).coerceIn(MIN_ANIMATION_SPEED, MAX_ANIMATION_SPEED),
+            repeatCount = parseRepeatCount(element),
+            autoreverses = element.getAttribute("autoreverses") == "1",
+            discrete = element.getAttribute("calculationMode") == "discrete",
+            eased = timingFunction.isNotBlank() && timingFunction != "linear",
+        )
+    }
+
+    private fun parseRepeatCount(element: Element): Float {
+        val repeatCount = element.getAttribute("repeatCount")
+        val repeatDuration = element.getAttribute("repeatDuration")
+        if (repeatCount.equals("inf", ignoreCase = true) || repeatDuration.equals("inf", ignoreCase = true)) {
+            return Float.POSITIVE_INFINITY
+        }
+        val parsed = repeatCount.toFloatOrNull() ?: return 1f
+        return if (parsed.isFinite()) parsed.coerceIn(1f, MAX_REPEAT_COUNT) else Float.POSITIVE_INFINITY
+    }
+
+    private fun parseAnimationValue(element: Element): AnimationValue? = when (element.localTagName()) {
+        "CGPoint" -> parseAnimationValue(element.getAttribute("value"))
+        "real", "integer", "value" -> element.getAttribute("value").toFloatOrNull()?.let { AnimationValue(it) }
+        else -> null
+    }
+
+    private fun parseAnimationValue(value: String): AnimationValue? {
+        if (value.isBlank()) return null
+        val numbers = value.trim().split(Regex("\\s+")).mapNotNull(String::toFloatOrNull)
+        return when (numbers.size) {
+            0 -> null
+            1 -> AnimationValue(numbers[0])
+            else -> AnimationValue(numbers[0], numbers[1])
+        }
     }
 
     private fun parseStates(root: Element): Map<String, Map<String, LayerOverrides>> {
@@ -185,6 +260,14 @@ class TendiesSceneLoader(
                             "position.y" -> layer.positionY = value
                             "transform.rotation.z" -> layer.rotationRadians = value
                             "opacity" -> layer.opacity = value.coerceIn(0f, 1f)
+                            "bounds.size.width" -> layer.width = value.coerceAtLeast(0f)
+                            "bounds.size.height" -> layer.height = value.coerceAtLeast(0f)
+                            "transform.scale" -> {
+                                layer.scaleX = value
+                                layer.scaleY = value
+                            }
+                            "transform.scale.x" -> layer.scaleX = value
+                            "transform.scale.y" -> layer.scaleY = value
                         }
                     }
                 state.getAttribute("name") to overrides

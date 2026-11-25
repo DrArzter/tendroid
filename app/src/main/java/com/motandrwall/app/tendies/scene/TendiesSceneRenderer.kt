@@ -112,7 +112,14 @@ class TendiesSceneRenderer {
         parentCoordinatesYUp: Boolean,
     ) {
         val from = fromPose.documents.getOrNull(documentIndex)?.get(layer.id)
-            ?: LayerPose(layer.positionX, layer.positionY, layer.rotationRadians, layer.opacity)
+            ?: LayerPose(
+                layer.positionX,
+                layer.positionY,
+                layer.rotationRadians,
+                layer.opacity,
+                layer.width,
+                layer.height,
+            )
         val to = toPose.documents.getOrNull(documentIndex)?.get(layer.id) ?: from
         val positionX = lerp(from.positionX, to.positionX, progress("position.x"))
         val rawPositionY = lerp(from.positionY, to.positionY, progress("position.y"))
@@ -126,16 +133,21 @@ class TendiesSceneRenderer {
         val opacity = lerp(from.opacity, to.opacity, progress("opacity"))
         val alpha = (inheritedAlpha * opacity).coerceIn(0f, 1f)
         if (alpha <= 0f) return
+        val width = lerp(from.width, to.width, progress("bounds.size.width"))
+        val height = lerp(from.height, to.height, progress("bounds.size.height"))
+        val scaleX = lerp(from.scaleX, to.scaleX, progress("transform.scale.x"))
+        val scaleY = lerp(from.scaleY, to.scaleY, progress("transform.scale.y"))
 
         val save = canvas.save()
         canvas.translate(positionX, positionY)
         canvas.rotate(Math.toDegrees(rotation.toDouble()).toFloat())
+        canvas.scale(scaleX, scaleY)
         canvas.translate(
-            -layer.anchorX * layer.width - layer.boundsX,
-            -layer.anchorY * layer.height - layer.boundsY,
+            -layer.anchorX * width - layer.boundsX,
+            -layer.anchorY * height - layer.boundsY,
         )
         if (layer.masksToBounds) {
-            canvas.clipRect(layer.boundsX, layer.boundsY, layer.boundsX + layer.width, layer.boundsY + layer.height)
+            canvas.clipRect(layer.boundsX, layer.boundsY, layer.boundsX + width, layer.boundsY + height)
         }
 
         layer.backgroundColor?.let { color ->
@@ -144,8 +156,8 @@ class TendiesSceneRenderer {
             canvas.drawRect(
                 layer.boundsX,
                 layer.boundsY,
-                layer.boundsX + layer.width,
-                layer.boundsY + layer.height,
+                layer.boundsX + width,
+                layer.boundsY + height,
                 paint,
             )
         }
@@ -155,7 +167,7 @@ class TendiesSceneRenderer {
                 bitmap,
                 null,
                 bitmapDestination.apply {
-                    set(layer.boundsX, layer.boundsY, layer.boundsX + layer.width, layer.boundsY + layer.height)
+                    set(layer.boundsX, layer.boundsY, layer.boundsX + width, layer.boundsY + height)
                 },
                 paint,
             )
@@ -168,8 +180,8 @@ class TendiesSceneRenderer {
             val fontKey = layer.fontName.orEmpty()
             paint.typeface = typefaces.getOrPut(fontKey) { Typeface.create(layer.fontName, Typeface.NORMAL) }
             val metrics = paint.fontMetrics
-            val baseline = layer.boundsY + layer.height / 2f - (metrics.ascent + metrics.descent) / 2f
-            canvas.drawText(text, layer.boundsX + layer.width / 2f, baseline, paint)
+            val baseline = layer.boundsY + height / 2f - (metrics.ascent + metrics.descent) / 2f
+            canvas.drawText(text, layer.boundsX + width / 2f, baseline, paint)
         }
 
         layer.children.forEach { child ->
@@ -183,7 +195,7 @@ class TendiesSceneRenderer {
                 documentIndex = documentIndex,
                 progress = progress,
                 inheritedAlpha = alpha,
-                parentHeight = layer.height,
+                parentHeight = height,
                 parentCoordinatesYUp = !layer.geometryFlipped,
             )
         }

@@ -247,7 +247,14 @@ internal class TendiesGlRenderer {
         parentTransform: AffineTransform2D,
     ) {
         val from = fromPose.documents.getOrNull(documentIndex)?.get(layer.id)
-            ?: LayerPose(layer.positionX, layer.positionY, layer.rotationRadians, layer.opacity)
+            ?: LayerPose(
+                layer.positionX,
+                layer.positionY,
+                layer.rotationRadians,
+                layer.opacity,
+                layer.width,
+                layer.height,
+            )
         val to = toPose.documents.getOrNull(documentIndex)?.get(layer.id) ?: from
         val positionX = lerp(from.positionX, to.positionX, progress("position.x"))
         val rawPositionY = lerp(from.positionY, to.positionY, progress("position.y"))
@@ -261,23 +268,28 @@ internal class TendiesGlRenderer {
         val opacity = lerp(from.opacity, to.opacity, progress("opacity"))
         val alpha = (inheritedAlpha * opacity).coerceIn(0f, 1f)
         if (alpha <= 0f) return
+        val width = lerp(from.width, to.width, progress("bounds.size.width"))
+        val height = lerp(from.height, to.height, progress("bounds.size.height"))
+        val scaleX = lerp(from.scaleX, to.scaleX, progress("transform.scale.x"))
+        val scaleY = lerp(from.scaleY, to.scaleY, progress("transform.scale.y"))
 
         val transform = parentTransform
             .translated(positionX, positionY)
             .rotated(rotation)
+            .scaled(scaleX, scaleY)
             .translated(
-                -layer.anchorX * layer.width - layer.boundsX,
-                -layer.anchorY * layer.height - layer.boundsY,
+                -layer.anchorX * width - layer.boundsX,
+                -layer.anchorY * height - layer.boundsY,
             )
         val clipPushed = layer.masksToBounds
-        if (clipPushed) pushClip(transform, layer)
+        if (clipPushed) pushClip(transform, layer, width, height)
 
-        layer.backgroundColor?.let { drawSolid(transform, layer, it, alpha) }
+        layer.backgroundColor?.let { drawSolid(transform, layer, width, height, it, alpha) }
         layer.imagePath?.let(scene.bitmaps::get)?.let { bitmap ->
-            drawTextured(transform, layer, textureFor(bitmap), alpha)
+            drawTextured(transform, layer, width, height, textureFor(bitmap), alpha)
         }
         layer.text?.let {
-            drawTextured(transform, layer, textTextureFor(layer), alpha)
+            drawTextured(transform, layer, width, height, textTextureFor(layer), alpha)
         }
         layer.children.forEach { child ->
             renderLayer(
@@ -288,31 +300,31 @@ internal class TendiesGlRenderer {
                 documentIndex = documentIndex,
                 progress = progress,
                 inheritedAlpha = alpha,
-                parentHeight = layer.height,
+                parentHeight = height,
                 parentCoordinatesYUp = !layer.geometryFlipped,
                 parentTransform = transform,
             )
         }
-        if (clipPushed) popClip(transform, layer)
+        if (clipPushed) popClip(transform, layer, width, height)
     }
 
-    private fun pushClip(transform: AffineTransform2D, layer: SceneLayer) {
+    private fun pushClip(transform: AffineTransform2D, layer: SceneLayer, width: Float, height: Float) {
         GLES20.glEnable(GLES20.GL_STENCIL_TEST)
         GLES20.glColorMask(false, false, false, false)
         GLES20.glStencilFunc(GLES20.GL_EQUAL, stencilDepth, STENCIL_MASK)
         GLES20.glStencilOp(GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_INCR)
-        drawQuad(transform, layer, texture = 0, red = 0f, green = 0f, blue = 0f, alpha = 0f)
+        drawQuad(transform, layer, width, height, texture = 0, red = 0f, green = 0f, blue = 0f, alpha = 0f)
         GLES20.glColorMask(true, true, true, true)
         stencilDepth += 1
         GLES20.glStencilFunc(GLES20.GL_EQUAL, stencilDepth, STENCIL_MASK)
         GLES20.glStencilOp(GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_KEEP)
     }
 
-    private fun popClip(transform: AffineTransform2D, layer: SceneLayer) {
+    private fun popClip(transform: AffineTransform2D, layer: SceneLayer, width: Float, height: Float) {
         GLES20.glColorMask(false, false, false, false)
         GLES20.glStencilFunc(GLES20.GL_EQUAL, stencilDepth, STENCIL_MASK)
         GLES20.glStencilOp(GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_DECR)
-        drawQuad(transform, layer, texture = 0, red = 0f, green = 0f, blue = 0f, alpha = 0f)
+        drawQuad(transform, layer, width, height, texture = 0, red = 0f, green = 0f, blue = 0f, alpha = 0f)
         GLES20.glColorMask(true, true, true, true)
         stencilDepth -= 1
         if (stencilDepth == 0) {
@@ -323,11 +335,20 @@ internal class TendiesGlRenderer {
         }
     }
 
-    private fun drawSolid(transform: AffineTransform2D, layer: SceneLayer, color: Int, inheritedAlpha: Float) {
+    private fun drawSolid(
+        transform: AffineTransform2D,
+        layer: SceneLayer,
+        width: Float,
+        height: Float,
+        color: Int,
+        inheritedAlpha: Float,
+    ) {
         val alpha = Color.alpha(color) / 255f * inheritedAlpha
         drawQuad(
             transform = transform,
             layer = layer,
+            width = width,
+            height = height,
             texture = 0,
             red = Color.red(color) / 255f * alpha,
             green = Color.green(color) / 255f * alpha,
@@ -339,15 +360,19 @@ internal class TendiesGlRenderer {
     private fun drawTextured(
         transform: AffineTransform2D,
         layer: SceneLayer,
+        width: Float,
+        height: Float,
         texture: Int,
         alpha: Float,
     ) {
-        drawQuad(transform, layer, texture, alpha, alpha, alpha, alpha)
+        drawQuad(transform, layer, width, height, texture, alpha, alpha, alpha, alpha)
     }
 
     private fun drawQuad(
         transform: AffineTransform2D,
         layer: SceneLayer,
+        width: Float,
+        height: Float,
         texture: Int,
         red: Float,
         green: Float,
@@ -357,8 +382,8 @@ internal class TendiesGlRenderer {
         transform = transform,
         left = layer.boundsX,
         top = layer.boundsY,
-        right = layer.boundsX + layer.width,
-        bottom = layer.boundsY + layer.height,
+        right = layer.boundsX + width,
+        bottom = layer.boundsY + height,
         texture = texture,
         red = red,
         green = green,

@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.floor
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -11,6 +12,54 @@ data class TendiesScene(
     val documents: List<SceneDocument>,
     val bitmaps: Map<String, Bitmap>,
 ) : AutoCloseable {
+    /**
+     * Layers carrying their own CAAnimation, per document. Looping animations
+     * run off wall-clock time rather than state transitions, so they are
+     * resolved on every frame and the tree is flattened once up front.
+     */
+    private val animatedLayers: List<List<SceneLayer>> = documents.map { document ->
+        buildList {
+            fun visit(layer: SceneLayer) {
+                if (layer.animations.any(LayerAnimation::isAnimated)) add(layer)
+                layer.children.forEach(::visit)
+            }
+            visit(document.root)
+        }
+    }
+
+    /**
+     * Wall-clock millisecond after which no animation changes any more, so the
+     * engine can stop drawing. Infinite when the scene repeats forever.
+     */
+    val animationEndMillis: Float = animatedLayers.flatten()
+        .flatMap(SceneLayer::animations)
+        .filter(LayerAnimation::isAnimated)
+        .maxOfOrNull(LayerAnimation::endMillis)
+        ?: 0f
+
+    val hasAnimations: Boolean = animationEndMillis > 0f
+
+    /**
+     * Overlays layer animations on an already posed scene. Core Animation
+     * presents animated key paths instead of the model value, so these win over
+     * both the layer attribute and any state override.
+     */
+    fun animate(pose: ScenePose, elapsedMillis: Float): ScenePose {
+        if (!hasAnimations) return pose
+        return ScenePose(pose.documents.mapIndexed { documentIndex, layers ->
+            val animated = animatedLayers.getOrElse(documentIndex) { emptyList() }
+            if (animated.isEmpty()) return@mapIndexed layers
+            layers.toMutableMap().apply {
+                animated.forEach { layer ->
+                    val base = this[layer.id] ?: return@forEach
+                    this[layer.id] = layer.animations.fold(base) { pose, animation ->
+                        animation.applyTo(pose, elapsedMillis)
+                    }
+                }
+            }
+        })
+    }
+
     fun pose(stateName: String): ScenePose = ScenePose(
         documents.map { document ->
             buildMap {
@@ -23,6 +72,10 @@ data class TendiesScene(
                             positionY = overrides?.positionY ?: layer.positionY,
                             rotationRadians = overrides?.rotationRadians ?: layer.rotationRadians,
                             opacity = overrides?.opacity ?: layer.opacity,
+                            width = overrides?.width ?: layer.width,
+                            height = overrides?.height ?: layer.height,
+                            scaleX = overrides?.scaleX ?: 1f,
+                            scaleY = overrides?.scaleY ?: 1f,
                         ),
                     )
                     layer.children.forEach(::visit)
@@ -69,6 +122,10 @@ data class TendiesScene(
                                 progress("transform.rotation.z"),
                             ),
                             opacity = lerp(start.opacity, end.opacity, progress("opacity")),
+                            width = lerp(start.width, end.width, progress("bounds.size.width")),
+                            height = lerp(start.height, end.height, progress("bounds.size.height")),
+                            scaleX = lerp(start.scaleX, end.scaleX, progress("transform.scale.x")),
+                            scaleY = lerp(start.scaleY, end.scaleY, progress("transform.scale.y")),
                         ),
                     )
                 }
@@ -119,12 +176,21 @@ data class LayerPose(
     val positionY: Float,
     val rotationRadians: Float,
     val opacity: Float,
+    /** Resolved `bounds.size`; states and animations may resize a layer. */
+    val width: Float = 0f,
+    val height: Float = 0f,
+    val scaleX: Float = 1f,
+    val scaleY: Float = 1f,
 ) {
     fun interpolate(to: LayerPose, progress: Float): LayerPose = LayerPose(
         positionX = lerp(positionX, to.positionX, progress),
         positionY = lerp(positionY, to.positionY, progress),
         rotationRadians = lerp(rotationRadians, to.rotationRadians, progress),
         opacity = lerp(opacity, to.opacity, progress),
+        width = lerp(width, to.width, progress),
+        height = lerp(height, to.height, progress),
+        scaleX = lerp(scaleX, to.scaleX, progress),
+        scaleY = lerp(scaleY, to.scaleY, progress),
     )
 
     private fun lerp(start: Float, end: Float, progress: Float): Float =
@@ -164,6 +230,106 @@ data class SceneAnimation(
     val durationMillis: Float,
     val curve: TransitionCurve,
 )
+
+/** One value of a CAAnimation `values` list; [y] is unused for scalar key paths. */
+data class AnimationValue(val x: Float, val y: Float = 0f)
+
+/**
+ * A CABasicAnimation or CAKeyframeAnimation attached to a layer. Unlike
+ * [SceneTransition] these are driven by wall-clock time and usually repeat
+ * forever, which is how exported packages express snow, drift and spin.
+ */
+data class LayerAnimation(
+    val keyPath: String,
+    val values: List<AnimationValue>,
+    val keyTimes: List<Float> = emptyList(),
+    val beginMillis: Float = 0f,
+    val durationMillis: Float = 0f,
+    val speed: Float = 1f,
+    val repeatCount: Float = 1f,
+    val autoreverses: Boolean = false,
+    val discrete: Boolean = false,
+    val eased: Boolean = false,
+) {
+    val isAnimated: Boolean =
+        values.size > 1 && durationMillis > 0f && speed > 0f && SUPPORTED_KEY_PATHS.contains(keyPath)
+
+    /** Cycles of [durationMillis] this animation plays, counting an autoreversed return as its own cycle. */
+    private val totalCycles: Float =
+        (if (repeatCount.isFinite()) repeatCount.coerceAtLeast(1f) else Float.POSITIVE_INFINITY) *
+            (if (autoreverses) 2f else 1f)
+
+    val endMillis: Float =
+        if (!isAnimated) 0f
+        else if (totalCycles.isInfinite()) Float.POSITIVE_INFINITY
+        else beginMillis + totalCycles * durationMillis / speed
+
+    fun applyTo(pose: LayerPose, elapsedMillis: Float): LayerPose {
+        if (!isAnimated) return pose
+        val value = valueAt(progressAt(elapsedMillis))
+        return when (keyPath) {
+            "position" -> pose.copy(positionX = value.x, positionY = value.y)
+            "position.x" -> pose.copy(positionX = value.x)
+            "position.y" -> pose.copy(positionY = value.x)
+            "transform.rotation.z" -> pose.copy(rotationRadians = value.x)
+            "opacity" -> pose.copy(opacity = value.x.coerceIn(0f, 1f))
+            "bounds.size" -> pose.copy(width = value.x.coerceAtLeast(0f), height = value.y.coerceAtLeast(0f))
+            "bounds.size.width" -> pose.copy(width = value.x.coerceAtLeast(0f))
+            "bounds.size.height" -> pose.copy(height = value.x.coerceAtLeast(0f))
+            // A bare `transform.scale` drives both axes from one scalar.
+            "transform.scale" -> pose.copy(scaleX = value.x, scaleY = value.x)
+            "transform.scale.x" -> pose.copy(scaleX = value.x)
+            "transform.scale.y" -> pose.copy(scaleY = value.x)
+            else -> pose
+        }
+    }
+
+    /** Position within a single cycle, after repeat and autoreverse folding. */
+    private fun progressAt(elapsedMillis: Float): Float {
+        val local = (elapsedMillis - beginMillis) * speed
+        if (local <= 0f) return 0f
+        val cycles = local / durationMillis
+        val finished = cycles >= totalCycles
+        // `removedOnCompletion="0"` keeps the final frame on screen, so a
+        // finished animation holds the end of its last cycle rather than
+        // snapping back to the model value.
+        val cycleIndex = if (finished) totalCycles - 1f else floor(cycles)
+        val fraction = if (finished) 1f else cycles - cycleIndex
+        return if (autoreverses && cycleIndex.toLong() % 2L == 1L) 1f - fraction else fraction
+    }
+
+    private fun valueAt(progress: Float): AnimationValue {
+        val times = keyTimes.takeIf { it.size == values.size }
+            ?: List(values.size) { it.toFloat() / (values.size - 1) }
+        val index = times.indexOfLast { it <= progress }.coerceIn(0, values.size - 2)
+        if (discrete) return values[index]
+        val span = times[index + 1] - times[index]
+        val local = if (span <= 0f) 1f else ((progress - times[index]) / span).coerceIn(0f, 1f)
+        val eased = if (eased) local * local * (3f - 2f * local) else local
+        val start = values[index]
+        val end = values[index + 1]
+        return AnimationValue(
+            x = start.x + (end.x - start.x) * eased,
+            y = start.y + (end.y - start.y) * eased,
+        )
+    }
+
+    private companion object {
+        val SUPPORTED_KEY_PATHS = setOf(
+            "position",
+            "position.x",
+            "position.y",
+            "transform.rotation.z",
+            "opacity",
+            "bounds.size",
+            "bounds.size.width",
+            "bounds.size.height",
+            "transform.scale",
+            "transform.scale.x",
+            "transform.scale.y",
+        )
+    }
+}
 
 sealed interface TransitionCurve {
     fun transform(progress: Float, durationMillis: Float): Float
@@ -238,6 +404,7 @@ data class SceneLayer(
     val fontName: String?,
     val fontSize: Float,
     val foregroundColor: Int,
+    val animations: List<LayerAnimation> = emptyList(),
     val children: List<SceneLayer>,
 )
 
@@ -246,4 +413,8 @@ data class LayerOverrides(
     var positionY: Float? = null,
     var rotationRadians: Float? = null,
     var opacity: Float? = null,
+    var width: Float? = null,
+    var height: Float? = null,
+    var scaleX: Float? = null,
+    var scaleY: Float? = null,
 )
